@@ -1,0 +1,13 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.log
+
+# Secrets & data — never commit these
+config.json
+data/
+
+# Misc
+.DS_Store
+node_modules/

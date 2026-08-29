@@ -6,7 +6,7 @@ or **PDF**, and it will:
 1. **Parse** the file (slide/page text + figures + speaker notes).
 2. **Distill key points** with AI (DeepSeek `deepseek-v4-pro`).
 3. **Generate** active-recall flashcards and single-best-answer MCQ quizzes.
-4. **Caption figures & diagrams** with a vision model (Alibaba Bailian `qwen-vl-max`).
+4. **Caption figures & diagrams** with a vision model (DeepSeek `deepseek-v4-flash-vision-exp` via the opencode proxy).
 5. **Schedule reviews** with spaced  SM-2 for flashcards plus Feynman re-test intervals for key points, merged into one daily study queue with per-day new-card/new-point limits.
 6. **Track mistakes** in a mistake notebook that re-tests you until mastered.
 7. **Log study time & progress** (streaks, per-lesson mastery).
@@ -31,7 +31,7 @@ After logging in, open **Settings** and paste your two API keys:
 | Purpose | Provider | Base URL (default) | Model (default) |
 |---|---|---|---|
 | Text (notes/cards/quiz) | DeepSeek | `https://api.deepseek.com` | `deepseek-v4-pro` |
-| Vision (figures / OCR) | Alibaba Bailian | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-vl-max` |
+| Vision (figures / OCR) | DeepSeek (opencode 代理) | `https://opencode.ai/zen/go/v1` | `deepseek-v4-flash-vision-exp` |
 
 Keys are saved to `data/config.json` on the server, shared across your devices.
 

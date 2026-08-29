@@ -39,7 +39,7 @@ DB_PATH = os.path.join(DATA_DIR, "data.db")
 LEGACY_CONFIG = os.path.join(ROOT, "config.json")
 CLASSIFICATION_PATH = os.path.join(DATA_DIR, "classification.json")
 PORT = int(os.environ.get("PORT", "8756"))
-HOST = os.environ.get("HOST", "127.0.0.1")
+HOST = os.environ.get("HOST", "0.0.0.0")
 MAX_UPLOAD = 150 * 1024 * 1024  # 150 MB
 MAX_BODY = 200 * 1024 * 1024  # JSON API bodies (store records, etc.)
 TOKEN_TTL = 30 * 24 * 3600  # 30 days
@@ -72,11 +72,11 @@ DEFAULT_CONFIG = {
         "api_key": "",
     },
     "vision": {
-        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "model": "qwen-vl-max",
+        "base_url": "https://opencode.ai/zen/go/v1",
+        "model": "deepseek-v4-flash-vision-exp",
         "api_key": "",
     },
-    "vision_active": "bailian",
+    "vision_active": "opencode",
     "vision_presets": {
         "bailian": {
             "label": "Qwen (阿里百炼)",

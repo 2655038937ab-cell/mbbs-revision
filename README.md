@@ -16,22 +16,37 @@ device you log in from sees the same lessons, cards, mistakes and progress.
 
 ## Run it (locally)
 
+Prerequisites: **Python 3.9+** and **git** (or download the repo as a ZIP and extract it).
+
 ```bash
+# 1. clone (or you downloaded the ZIP and opened the folder)
+git clone <your-repo-url> mbbs-revision
+cd mbbs-revision
+
+# 2. run — it creates a local venv, installs PyMuPDF, and starts the server
 ./start.sh
 ```
 
 Then open **http://127.0.0.1:8756** and log in. The default password is `mbbs1234` — change it immediately in **Settings → Account**.
 
 > To set a password from the start: `PASSWORD='your-password' ./start.sh`
+>
+> On Linux/macOS make `start.sh` executable first: `chmod +x start.sh`
 
 ## First-time setup
 
-After logging in, open **Settings** and paste your two API keys:
+After logging in, open **Settings** and paste your API key(s). This app talks to the
+models through the **opencode** proxy (`opencode.ai/zen/go/v1`), so one opencode
+API key covers both text and vision:
 
-| Purpose | Provider | Base URL (default) | Model (default) |
+| Purpose | Provider | Base URL | Model |
 |---|---|---|---|
-| Text (notes/cards/quiz) | DeepSeek | `https://api.deepseek.com` | `deepseek-v4-pro` |
-| Vision (figures / OCR) | DeepSeek (opencode 代理) | `https://opencode.ai/zen/go/v1` | `deepseek-v4-flash-vision-exp` |
+| Text (notes/cards/quiz) | opencode 代理 | `https://opencode.ai/zen/go/v1` | `deepseek-v4-flash` |
+| Vision (figures / OCR) | opencode 代理 | `https://opencode.ai/zen/go/v1` | `deepseek-v4-flash-vision-exp` |
+
+- **Where to get the key**: create an account on **https://opencode.ai** and copy its
+  API key. In the site's **Settings → Text model**, paste that key into the **API key**
+  field. The Vision model reuses the same key (they share it), so you don't need a second one.
 
 Keys are saved to `data/config.json` on the server, shared across your devices.
 

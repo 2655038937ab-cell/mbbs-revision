@@ -7,7 +7,7 @@ or **PDF**, and it will:
 2. **Distill key points** with AI (DeepSeek `deepseek-v4-pro`).
 3. **Generate** active-recall flashcards and single-best-answer MCQ quizzes.
 4. **Caption figures & diagrams** with a vision model (Alibaba Bailian `qwen-vl-max`).
-5. **Schedule reviews** with spaced repetition (SM-2).
+5. **Schedule reviews** with spaced  SM-2 for flashcards plus Feynman re-test intervals for key points, merged into one daily study queue with per-day new-card/new-point limits.
 6. **Track mistakes** in a mistake notebook that re-tests you until mastered.
 7. **Log study time & progress** (streaks, per-lesson mastery).
 
@@ -20,8 +20,7 @@ device you log in from sees the same lessons, cards, mistakes and progress.
 ./start.sh
 ```
 
-Then open **http://127.0.0.1:8756** and log in. The default password is `mbbs1234` —
-change it in **Settings → Account**.
+Then open **http://127.0.0.1:8756** and log in. The default password is `mbbs1234` — change it immediately in **Settings → Account**.
 
 > To set a password from the start: `PASSWORD='your-password' ./start.sh`
 

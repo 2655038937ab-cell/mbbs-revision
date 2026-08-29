@@ -16,6 +16,7 @@ from xml.etree import ElementTree as ET
 
 # Namespaces used inside PPTX OOXML
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
 R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
 IMAGE_MIME = {
@@ -89,9 +90,68 @@ def _resolve_media(zf, target):
     return None
 
 
-def _slide_images(zf, num):
+def _slide_size(zf):
+    """Return (width_emu, height_emu) of the slide master, or (914400, 685800) default."""
+    for path in ("ppt/presentation.xml", "ppt/slideMasters/slideMaster1.xml"):
+        if path in zf.namelist():
+            try:
+                root = ET.fromstring(zf.read(path))
+            except ET.ParseError:
+                continue
+            sz = root.find("{%s}sldSz" % P_NS)
+            if sz is not None:
+                try:
+                    return int(sz.attrib.get("cx", 914400)), int(sz.attrib.get("cy", 685800))
+                except ValueError:
+                    pass
+    return 914400, 685800
+
+
+def _parse_pic_boxes(slide_xml, slide_w, slide_h):
+    """Map rId -> normalized bounding box for every picture on the slide.
+
+    Returns {rId: {"x","y","w","h"}} with coordinates as fractions (0-1) of the
+    slide, so the server can tell whether a repeated image sits in a corner
+    (e.g. a school logo top-right).
+    """
+    boxes = {}
+    if not slide_xml:
+        return boxes
+    try:
+        root = ET.fromstring(slide_xml)
+    except ET.ParseError:
+        return boxes
+    for pic in root.iter("{%s}pic" % P_NS):
+        blip = pic.find(".//{%s}blip" % A_NS)
+        if blip is None:
+            continue
+        rid = blip.attrib.get("{%s}embed" % R_NS)
+        if not rid:
+            continue
+        xfrm = pic.find(".//{%s}xfrm" % A_NS)
+        if xfrm is None:
+            continue
+        off = xfrm.find("{%s}off" % A_NS)
+        ext = xfrm.find("{%s}ext" % A_NS)
+        if off is None or ext is None:
+            continue
+        try:
+            x = int(off.attrib.get("x", 0)) / float(slide_w)
+            y = int(off.attrib.get("y", 0)) / float(slide_h)
+            w = int(ext.attrib.get("cx", 0)) / float(slide_w)
+            h = int(ext.attrib.get("cy", 0)) / float(slide_h)
+        except (ValueError, ZeroDivisionError):
+            continue
+        if w <= 0 or h <= 0:
+            continue
+        boxes[rid] = {"x": x, "y": y, "w": w, "h": h}
+    return boxes
+
+
+def _slide_images(zf, num, slide_xml=None, slide_w=914400, slide_h=685800):
     images = []
-    for _rid, target in _read_rels(zf, num):
+    boxes = _parse_pic_boxes(slide_xml, slide_w, slide_h)
+    for rid, target in _read_rels(zf, num):
         entry = _resolve_media(zf, target)
         if not entry:
             continue
@@ -102,7 +162,10 @@ def _slide_images(zf, num):
         except Exception:
             continue
         data_url = "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
-        images.append({"name": posixpath.basename(entry), "mime": mime, "dataUrl": data_url})
+        im = {"name": posixpath.basename(entry), "mime": mime, "dataUrl": data_url}
+        if rid in boxes:
+            im.update(boxes[rid])
+        images.append(im)
     return images
 
 
@@ -128,10 +191,12 @@ def parse_pptx(data):
         raise ValueError("No slides found — is this a real .pptx file?")
 
     slides = []
+    slide_w, slide_h = _slide_size(zf)
     for sf in slide_files:
         num = int(re.search(r"slide(\d+)\.xml$", sf).group(1))
-        text = _extract_text(zf.read(sf))
-        images = _slide_images(zf, num)
+        slide_xml = zf.read(sf)
+        text = _extract_text(slide_xml)
+        images = _slide_images(zf, num, slide_xml, slide_w, slide_h)
         notes = _slide_notes(zf, num)
         slides.append({"index": num, "text": text, "images": images, "notes": notes})
     return {"slides": slides, "count": len(slides)}

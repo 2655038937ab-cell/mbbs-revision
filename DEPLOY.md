@@ -62,5 +62,7 @@ persistent disk mounted at `/app/data` → Deploy.
 ## Security notes
 
 - Every `/api/*` endpoint requires the password; only the login page is public.
-- API keys live in `data/config.json` on the server, never in the browser.
+- API keys live in `data/config.json` on the server, never in the browser. Keep that file private (`chmod 600`).
 - Set a strong `PASSWORD` env var — never rely on the default (`mbbs1234`).
+- Login has a per-IP backoff (10 failed attempts within 5 minutes = 429), and changing your password rotates the session secret so previously issued logins stop working.
+- Put the app behind HTTPS when exposing it to the internet (Railway/Render do this automatically).

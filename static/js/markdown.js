@@ -10,6 +10,7 @@ function escapeHtml(s) {
 
 function inline(text) {
   return text
+    .replace(/==([^=\n]+)==/g, '<mark class="hl">$1</mark>')
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")

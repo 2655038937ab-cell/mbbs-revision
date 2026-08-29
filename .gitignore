@@ -11,3 +11,13 @@ data/
 # Misc
 .DS_Store
 node_modules/
+
+# Local / dev-only helpers (do not deploy)
+.macos-autostart.plist
+.macos-autostart.plist.patched
+macos-autostart.plist
+setup-autostart.sh
+test_glm*.py
+test_qwen.py
+recompress_lessons.py
+smoke_test.js

@@ -26,6 +26,31 @@ async function json(resp) {
   return data;
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Retry transient LLM failures (rate-limit 429 / server 5xx / network / timeout)
+// with exponential backoff, at most `retries` additional attempts.
+async function withRetry(fn, retries = 2) {
+  let attempt = 0;
+  for (;;) {
+    let data;
+    try {
+      data = await fn();
+    } catch (e) {
+      data = { error: String((e && e.message) || e) };
+    }
+    const msg = (data && data.error) || "";
+    const transient =
+      !data || data.timeout === true ||
+      /429|too many|rate.?limit/i.test(msg) ||
+      /5\d\d|server error|gateway|timed? ?out|ECONNRESET|network|fetch failed/i.test(msg);
+    if (!transient || attempt >= retries) return data;
+    attempt++;
+    // 2s, 4s backoff (+ small jitter) so a burst of 429s doesn't pile up.
+    await sleep(2000 * attempt + Math.random() * 500);
+  }
+}
+
 export const api = {
   setToken,
 
@@ -53,11 +78,24 @@ export const api = {
   async getConfig() {
     return json(await authedFetch("/api/config"));
   },
+  async getModels(role) {
+    return json(await authedFetch("/api/models?role=" + encodeURIComponent(role)));
+  },
   async saveConfig(cfg) {
     return json(await authedFetch("/api/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(cfg),
+    }));
+  },
+  async getClassification() {
+    return json(await authedFetch("/api/classification"));
+  },
+  async saveClassification(data) {
+    return json(await authedFetch("/api/classification", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
     }));
   },
   async parseFile(file) {
@@ -72,27 +110,69 @@ export const api = {
     return json(resp);
   },
   async llm(messages, opts = {}) {
-    const resp = await authedFetch("/api/llm", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messages,
-        max_tokens: opts.max_tokens || 4000,
-        temperature: opts.temperature ?? 0.2,
-        json_mode: opts.json_mode ?? false,
-      }),
+    const ctx = (typeof window !== "undefined" && window.__llmCtx) || {};
+    return withRetry(async () => {
+      const resp = await authedFetch("/api/llm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages,
+          model: opts.model || undefined,
+          max_tokens: opts.max_tokens || 4000,
+          temperature: opts.temperature ?? 0.2,
+          json_mode: opts.json_mode ?? false,
+          reasoning_effort: opts.reasoning_effort ?? "low",
+          slot: opts.slot || ctx.slot || "",
+          lessonId: opts.lessonId || ctx.lessonId || "",
+          lessonTitle: opts.lessonTitle || ctx.lessonTitle || "",
+        }),
+      });
+      return json(resp);
     });
-    return json(resp);
   },
   async vision(imageDataUrl, prompt, opts = {}) {
-    const resp = await authedFetch("/api/vision", {
+    const ctx = (typeof window !== "undefined" && window.__llmCtx) || {};
+    return withRetry(async () => {
+      const resp = await authedFetch("/api/vision", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image: imageDataUrl,
+          prompt,
+          max_tokens: opts.max_tokens || 800,
+          slot: opts.slot || ctx.slot || "",
+          lessonId: opts.lessonId || ctx.lessonId || "",
+          lessonTitle: opts.lessonTitle || ctx.lessonTitle || "",
+        }),
+      });
+      return json(resp);
+    });
+  },
+  async exportFile(lessonId, type) {
+    const resp = await authedFetch(`/api/export/lesson/${encodeURIComponent(lessonId)}?type=${encodeURIComponent(type)}`);
+    if (!resp.ok) {
+      let msg = "HTTP " + resp.status;
+      try { msg = (await resp.json()).error || msg; } catch { /* ignore */ }
+      return { ok: false, error: msg };
+    }
+    const blob = await resp.blob();
+    const cd = resp.headers.get("Content-Disposition") || "";
+    const m = cd.match(/filename="?([^";]+)"?/i);
+    return { ok: true, blob, filename: m ? m[1] : ("lesson." + type) };
+  },
+  async exportDrive(lessonId) {
+    return json(await authedFetch(`/api/export/lesson/${encodeURIComponent(lessonId)}/drive`, { method: "POST" }));
+  },
+  async uploadPdf(lessonId, blob, filename) {
+    // Frontend-generated PDF (same style as the site) uploaded via the server
+    // so Google service-account credentials never reach the browser.
+    const resp = await authedFetch("/api/export/upload-pdf", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        image: imageDataUrl,
-        prompt,
-        max_tokens: opts.max_tokens || 800,
-      }),
+      headers: {
+        "Content-Type": "application/pdf",
+        "X-Filename": encodeURIComponent(filename || "lesson.pdf"),
+      },
+      body: blob,
     });
     return json(resp);
   },

@@ -21,3 +21,23 @@ test_glm*.py
 test_qwen.py
 recompress_lessons.py
 smoke_test.js
+test_*.py
+test_*.js
+recompress_lessons.py
+exporters.py
+smoke_test.js
+setup-autostart.sh
+macos-autostart.plist
+GOOGLE_DRIVE_SETUP.md
+deepseek harness/
+测试/
+test_*.py
+test_*.js
+recompress_lessons.py
+exporters.py
+smoke_test.js
+setup-autostart.sh
+macos-autostart.plist
+GOOGLE_DRIVE_SETUP.md
+deepseek harness/
+测试/

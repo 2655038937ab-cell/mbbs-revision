@@ -456,6 +456,70 @@ def merge_lesson_images(existing, incoming):
     return incoming
 
 
+def _has_image_payload(lesson):
+    """True if any slide image in the lesson carries a base64 dataUrl."""
+    for slide in (lesson or {}).get("slides") or []:
+        for im in slide.get("images") or []:
+            if isinstance(im, dict) and im.get("dataUrl"):
+                return True
+    return False
+
+
+def _strip_lesson_images(lesson):
+    """Move a lesson's base64 image payloads into the 'lessonImages' store and
+    null the dataUrl fields on the lesson record itself.
+
+    Called when a lesson is saved/imported ALREADY carrying image payloads
+    (a full lesson from parsing or a full edit). Keeps the 'lessons' store
+    light so listing it no longer reads megabytes of base64.
+    """
+    if not _has_image_payload(lesson):
+        return lesson  # already-light update; leave lessonsImages untouched
+    lid = lesson.get("id") or ""
+    img_record = {"id": lid, "lessonId": lid, "slides": []}
+    for slide in lesson.get("slides") or []:
+        saved = []
+        for im in slide.get("images") or []:
+            if isinstance(im, dict):
+                saved.append({
+                    "dataUrl": im.get("dataUrl"),
+                    "name": im.get("name"),
+                    "mime": im.get("mime"),
+                    "kind": im.get("kind"),
+                })
+                im["dataUrl"] = None
+            else:
+                saved.append({"dataUrl": None})
+        img_record["slides"].append({"images": saved})
+    get_store().put("lessonImages", img_record)
+    return lesson
+
+
+def _attach_lesson_images(lesson):
+    """Re-fill a light lesson record's dataUrl fields from 'lessonImages'.
+
+    Used when returning a SINGLE lesson (detail view) so the client gets the
+    full images without the list endpoint paying the cost.
+    """
+    if not isinstance(lesson, dict):
+        return lesson
+    lid = lesson.get("id") or ""
+    if not lid:
+        return lesson
+    img = get_store().get("lessonImages", lid)
+    if not isinstance(img, dict):
+        return lesson
+    saved_slides = img.get("slides") or []
+    for i, slide in enumerate(lesson.get("slides") or []):
+        saved = saved_slides[i].get("images") if i < len(saved_slides) else None
+        for j, im in enumerate(slide.get("images") or []):
+            if isinstance(im, dict) and not im.get("dataUrl") and saved and j < len(saved):
+                src = saved[j].get("dataUrl")
+                if src:
+                    im["dataUrl"] = src
+    return lesson
+
+
 def make_token(secret, ttl=TOKEN_TTL):
     exp = int(time.time()) + ttl
     payload = str(exp).encode("ascii")
@@ -754,8 +818,13 @@ class Handler(BaseHTTPRequestHandler):
                 if rec is None:
                     self._send_json({"item": None, "notFound": True})
                 else:
-                    if parts[0] == "lessons" and query.get("light", ["0"])[0] == "1":
-                        rec = lighten_lesson(rec)
+                    if parts[0] == "lessons":
+                        # Detail view re-attaches image payloads on demand; the
+                        # list endpoint stays light (no base64).
+                        if query.get("light", ["0"])[0] == "1":
+                            rec = lighten_lesson(rec)
+                        else:
+                            rec = _attach_lesson_images(rec)
                     self._send_json({"item": rec})
             else:
                 self._send_json({"error": "bad request"}, 400)
@@ -1117,6 +1186,7 @@ class Handler(BaseHTTPRequestHandler):
                 if st.get("lessons", lid):
                     lid = _uid()
                 lesson["id"] = lid
+                lesson = _strip_lesson_images(lesson)
                 st.put("lessons", lesson)
                 for card in (body.get("cards") or []):
                     if card.get("lessonId") not in (orig_id, lid):
@@ -1160,9 +1230,10 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"error": "Record must include an id"}, 400)
                     return
                 if parts[0] == "lessons":
-                    existing = get_store().get(parts[0], body["id"])
-                    if existing:
-                        body = merge_lesson_images(existing, body)
+                    # Store lesson images in the separate lessonImages store so
+                    # list reads stay light; a light (grading) update leaves
+                    # existing images untouched.
+                    body = _strip_lesson_images(body)
                 get_store().put(parts[0], body)
                 self._send_json({"ok": True})
                 return

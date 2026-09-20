@@ -692,7 +692,23 @@ body.pet-hidden #pet-show { display: inline-flex; }
   .lesson-meta { width: 100%; margin-left: 0; }
   .kp-filters, .kp-head { flex-wrap: wrap; }
   .q-option { font-size: 14px; }
-  #feature-launcher { left: 12px !important; bottom: 84px !important; padding: 9px 14px !important; }
+  /* The mode notice ("免密模式" / "试用版") is a sidebar column on desktop. Left in
+     the bottom row it was squeezed into a 73px-wide text column 166px tall, which
+     stretched the whole bar to 190px — and because the nav items stretch with it,
+     every icon became a 30x178 strip. That is a fifth of a phone screen for one row
+     of icons, and a 30px-wide tap target. Pin it as a strip above the bar instead. */
+  #sidebar .trial-banner {
+    position: fixed; left: 8px; right: 8px; bottom: 76px; margin: 0; z-index: 119;
+  }
+  /* Centre instead of stretch, so the bar is only as tall as its icons. */
+  #sidebar { align-items: center; }
+  #nav { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  #nav::-webkit-scrollbar { display: none; }
+  /* Keep a real tap target: 30px wide was under every touch guideline. The row
+     scrolls sideways when 12 items do not fit — the standard phone pattern. */
+  .nav-item { min-width: 42px; justify-content: center; }
+  /* Clear of the bar (76px) and of the notice strip sitting above it. */
+  #feature-launcher { left: auto !important; right: 10px !important; bottom: 134px !important; padding: 9px 14px !important; }
 }
 @media (max-width: 480px) {
   .grid-3, .grid-4 { grid-template-columns: 1fr; }

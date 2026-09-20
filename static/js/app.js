@@ -3254,7 +3254,28 @@ async function loadLessonPdf(lessonId) {
   throw new Error("PDF 导出失败");
 }
 
+/* html2pdf is a ~900 KB bundle that only matters when the user exports a PDF, so
+ * index.html no longer loads it up front — that single file used to be ~40% of a
+ * first visit's bytes (about 7 s on a 1 Mbps link). Load it on first use and
+ * remember the promise so concurrent exports share one fetch. The caller
+ * (loadLessonPdf) already falls back to the server-rendered PDF if this fails. */
+let html2pdfPromise = null;
+function ensureHtml2pdf() {
+  if (window.html2pdf) return Promise.resolve();
+  if (!html2pdfPromise) {
+    html2pdfPromise = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "vendor/html2pdf.bundle.min.js";
+      s.onload = () => resolve();
+      s.onerror = () => { html2pdfPromise = null; reject(new Error("html2pdf 加载失败")); };
+      document.head.appendChild(s);
+    });
+  }
+  return html2pdfPromise;
+}
+
 async function exportLessonPdf(lessonId) {
+  await ensureHtml2pdf();
   if (!window.html2pdf) throw new Error("html2pdf not loaded");
   const lesson = await getLessonFull(lessonId);
   if (!lesson) throw new Error("Lesson not found");

@@ -1251,6 +1251,22 @@ class Handler(BaseHTTPRequestHandler):
             return
         ext = os.path.splitext(full)[1].lower()
         ctype = MIME.get(ext, "application/octet-stream")
+        rel = rel.replace(os.sep, "/")
+        st = os.stat(full)
+        etag = '"%x-%x"' % (int(st.st_mtime), st.st_size)
+        # Vendored third-party libraries never change under this name, so the
+        # browser may keep them for a year. Our own js/css/html keep the same
+        # names across releases, so they must be revalidated — but "no-cache"
+        # (revalidate, then 304 with no body) is the right trade: the old handler
+        # sent "no-store", which made every visitor re-download app.js (503 KB)
+        # and html2pdf (906 KB) on *every* page load, even a refresh.
+        immutable = rel.startswith("vendor/")
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable" if immutable else "no-cache")
+            self.end_headers()
+            return
         with open(full, "rb") as fh:
             content = fh.read()
         self.send_response(200)
@@ -1258,9 +1274,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Cache-Control", "no-store")
-        # gzip only compressible text types; raster images gain nothing.
-        compressible = ctype.startswith("text/") or ctype in ("application/javascript", "application/json", "image/svg+xml")
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable" if immutable else "no-cache")
+        # gzip only compressible text types; raster images gain nothing. Compare the
+        # media type alone: MIME values here carry "; charset=utf-8", so testing the
+        # whole string against "application/javascript" silently excluded every .js
+        # file from compression — the largest assets on the page.
+        media = ctype.split(";")[0].strip()
+        compressible = media.startswith("text/") or media in (
+            "application/javascript", "application/json", "image/svg+xml", "application/xml",
+        )
         if compressible and self._gzip_ok() and len(content) > 512:
             content = gzip.compress(content)
             self.send_header("Content-Encoding", "gzip")

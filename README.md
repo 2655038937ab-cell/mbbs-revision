@@ -1,8 +1,8 @@
 # MBBS Revision · 主动回忆学习系统
 
 自托管的课件复习系统：上传 **PDF / PPTX**，自动提炼知识点、生成闪卡与选择题，并按间隔重复
-安排「今天该复习什么」。所有数据存在你自己的服务器上（SQLite），用一个密码保护，
-换设备登录看到的是同一份进度。
+安排「今天该复习什么」。所有数据存在你自己的服务器上（SQLite），**本地默认免密、打开即用**，
+也可以设一个密码让换设备登录看到的是同一份进度。
 
 界面文案是英文，**内容语言可配置**（中文 / 英文 / 中英对照），学科重点随课程自适应。
 
@@ -56,13 +56,22 @@ cd mbbs-revision
 ./start.sh                      # 首次会自动建 .venv 并安装 PyMuPDF
 ```
 
-打开 **http://127.0.0.1:8756**，默认密码 **`mbbs1234`** —— 登录后请立刻改掉。
+打开 **http://127.0.0.1:8756** 就能直接用 —— **本地默认不设密码**，打开即进入，没有登录页。
 
-想一开始就设密码：
+想加密码（别人也可能连到这台机器时，比如在同一片校园网里）：
 
 ```bash
-PASSWORD='你的密码' ./start.sh
+python3 set_password.py '你的密码'      # 至少 8 位；下次重启服务后生效
+python3 set_password.py                 # 只看当前状态
+python3 set_password.py --clear         # 取消密码，回到免密
 ```
+
+或者在界面里 **Settings → Account** 直接设置。加了密码之后，除登录页外所有接口都会要求登录。
+
+> ⚠️ **免密 = 谁都能改**。`HOST` 默认是 `0.0.0.0`，也就是说同一个局域网（宿舍、图书馆、
+> 校园网）里的任何人都能读、能写、**还能花掉你的 API key**。只在自己电脑上用、或者
+> 手机连自家 Wi-Fi 访问，免密没问题；一旦这台机器暴露在别人够得着的网络里，请设密码。
+> 服务器启动时会把这件事打印在日志第一行（`Password: none — ...`）。
 
 > Windows：`pip install -r requirements.txt` 然后 `python server.py`。
 
@@ -70,13 +79,17 @@ PASSWORD='你的密码' ./start.sh
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `PASSWORD` | `mbbs1234` | 登录密码。**设置后会覆盖「设置里改的密码」**（见 [3.3](#33-改密码)） |
+| `PASSWORD` | 无 | 登录密码。设了就启用密码模式，**且覆盖 `config.json` 里的密码**（见 [3.3](#33-改密码)） |
 | `REVISION_DATA_DIR` | `./data` | 数据目录（`config.json` + `data.db`）。**多开站点靠它隔离** |
 | `PORT` | `8756` | 监听端口 |
-| `HOST` | `0.0.0.0` | 监听地址 |
+| `HOST` | `0.0.0.0` | 监听地址（只想本机访问就设 `127.0.0.1`，那样免密很安全） |
 | `MAX_UPLOAD_MB` | `150` | 单个上传文件上限 |
 | `MAX_BODY_MB` | `200` | 请求体上限（应大于上传上限） |
 | `TRIAL_MODE` | 关闭 | `1` = 试用模式，见 [5.3](#53-试用模式trial_mode) |
+
+> 密码的存在与否只看两处：环境变量 `PASSWORD`，或 `config.json` 里的 `password_hash`。
+> 两者都没有 = 免密模式（本地默认）。已经设过密码的实例，升级到这个版本后行为**完全不变**。
+
 
 ---
 
@@ -107,13 +120,23 @@ Key 在 <https://platform.deepseek.com> 申请。也可以在 `vision_presets` �
 
 ### 3.3 改密码
 
-**Settings → Account**。
+**Settings → Account**。免密状态下这一栏没有「Current password」，直接填新密码就是设密码；
+已经设过密码后，改密码需要先输旧密码。改完密码会**轮换会话密钥**，也就是其它设备上的登录立刻失效。
 
 > ⚠️ 如果你是用 `PASSWORD=... ./start.sh` 启动的，**环境变量的优先级高于这里**：
 > 界面上改密码不会生效（登录仍以环境变量为准）。想让界面改密码生效，就别设 `PASSWORD`。
 
-忘记密码：把 `data/config.json` 里的 `password_hash` 清成 `""` 后重启（回落默认密码），
-或者直接用 `PASSWORD='新密码'` 启动覆盖。
+忘记密码 / 想回到免密：在服务器上跑
+
+```bash
+python3 set_password.py --clear    # 取消密码，重启服务后打开即用
+python3 set_password.py '新密码'    # 或直接覆盖成新密码
+```
+
+多开站点时先指定数据目录：`REVISION_DATA_DIR=./data-pku python3 set_password.py --clear`。
+`set_password.py` 是直接改 `config.json`，所以**改完必须重启服务**（服务把配置缓存在内存里）：
+macOS 用 launchd 的话 `launchctl kickstart -k gui/$(id -u)/com.mbbs.revision.server`。
+
 
 ---
 
@@ -332,18 +355,22 @@ python reattribute_slides.py data/data.db --title "你的课程名" --apply  # �
 列表接口只传必要字段（题目列表 18MB → 50KB）、带 ETag 缓存（二次访问 0 传输）。
 如果还嫌慢：① 分站存放，试用地只放一部分课程；② 升级服务器出网带宽。
 
-**Q：忘记密码**
-见 [3.3](#33-改密码)。
+**Q：忘记密码 / 不想再输密码**
+在服务器上 `python3 set_password.py --clear` 然后重启服务（见 [3.3](#33-改密码)）。
+`config.json` 里的 `password_hash` 清成 `""` 同理。
 
 ---
 
 ## 9. 安全说明
 
-- 除登录页外，**所有 `/api/*` 都需要密码**；试用模式只开放只读接口。
+- **密码是可选的**：`PASSWORD` 环境变量或 `config.json` 里的 `password_hash`，两处都没有
+  就是这个实例免密（本地默认），此时打开网址即拥有全部权限 —— 包括花你的 API key。
+- 设了密码之后，除登录页外**所有 `/api/*` 都需要登录**；试用模式（`TRIAL_MODE=1`）只开放只读接口。
 - API key 存在服务器 `data/config.json`，**从不下发到浏览器**（接口只返回打码后的尾部）。
 - 登录有按 IP 的失败退避（短时间内多次失败会被限流）；改密码会轮换会话密钥，
   此前发出的登录令牌立即失效。
-- 对外暴露请务必用 **HTTPS**，并设强密码（不要用默认 `mbbs1234`）。
+- 对外暴露（公网、内网、隧道）请务必用 **HTTPS** 并设强密码；免密只适合只有自己够得到的机器，
+  或者把 `HOST` 设成 `127.0.0.1`。
 - `data/` 与 `config.json` 已被 `.gitignore` 排除，别手动提交。
 
 ---

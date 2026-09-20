@@ -80,7 +80,13 @@ TOKEN_TTL = 30 * 24 * 3600  # 30 days
 LOGIN_WINDOW_SEC = 300
 LOGIN_MAX_FAILURES = 10
 
-DEFAULT_PASSWORD = "mbbs1234"
+# No password ships with the code. A local instance (the normal case) starts with
+# auth *off*: open the page and you are in, no login screen. Auth turns on when a
+# password is actually set — through the PASSWORD env var or Settings → Account —
+# and everything then behaves exactly as it did with a password. The trade-off is
+# deliberate and printed at startup: a password-less instance is readable *and*
+# writable by anyone who can reach its port, so anything reachable from the
+# network (LAN, cloud) needs PASSWORD set.
 
 # Some OpenAI-compatible gateways (e.g. OpenCode Go) sit behind a WAF that
 # rejects bare programmatic requests with HTTP 403 error 1010 unless they at
@@ -477,12 +483,11 @@ def _load_config_uncached():
     if not merged["secret"]:
         merged["secret"] = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii")
         changed = True
-    if not merged["password_hash"]:
-        if os.environ.get("PASSWORD"):
-            merged["password_hash"] = sha256(os.environ["PASSWORD"])
-        else:
-            merged["password_hash"] = sha256(DEFAULT_PASSWORD)
-            print("*** WARNING: using default password '%s' — change it in Settings. ***" % DEFAULT_PASSWORD)
+    if not merged["password_hash"] and os.environ.get("PASSWORD"):
+        # Env-supplied password only. With neither a stored hash nor PASSWORD the
+        # instance stays password-less (see password_configured) rather than being
+        # handed a well-known default that nobody ever changes.
+        merged["password_hash"] = sha256(os.environ["PASSWORD"])
         changed = True
 
     # Allow API keys to be injected via environment variables (for cloud deploy
@@ -538,10 +543,23 @@ def save_config(cfg):
 
 
 def effective_password_hash(cfg):
+    """Hash to check logins against, or "" when this instance has no password."""
     env_pw = os.environ.get("PASSWORD")
     if env_pw:
         return sha256(env_pw)
-    return cfg.get("password_hash") or sha256(DEFAULT_PASSWORD)
+    return cfg.get("password_hash") or ""
+
+
+def password_configured(cfg=None):
+    """False while this instance runs without a password (the local default).
+
+    PASSWORD wins over the stored hash (so a deploy can inject one without
+    touching config.json); an empty result means every request already counts as
+    the owner and no login screen is shown.
+    """
+    if os.environ.get("PASSWORD"):
+        return True
+    return bool((cfg or load_config()).get("password_hash"))
 
 
 def passwords_equal(a, b):
@@ -1202,6 +1220,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _authed(self):
         """Require a valid token, answering 401 otherwise. Costs money / changes data."""
+        if not password_configured():
+            # No password on this instance (the local default) — every request is
+            # already the owner's. Checked before the token so a stale token from
+            # when a password still existed cannot lock the owner out.
+            return True
         if self._token_ok():
             return True
         self._send_json({"error": "unauthorized"}, 401)
@@ -1255,13 +1278,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/auth/me":
-            # In trial mode anyone counts as signed in — this response is what stops
-            # the client from showing a login screen. Writes and AI calls stay behind
-            # the real password (see _read_ok / _authed). Checked in this order so a
-            # failed token never emits a 401 that the trial answer would then follow
-            # with a second response on the same connection.
+            # Two ways in without a login screen: trial mode (anyone counts as signed
+            # in; writes and AI stay behind the password) and an instance that has no
+            # password at all (local default). Checked in this order so a failed token
+            # never emits a 401 that the answer below would then follow with a second
+            # response on the same connection.
             if TRIAL_MODE:
                 self._send_json({"ok": True, "trial": True, "owner": self._token_ok()})
+                return
+            if not password_configured():
+                self._send_json({"ok": True, "trial": False, "open": True})
                 return
             if self._authed():
                 self._send_json({"ok": True, "trial": False})
@@ -1284,6 +1310,11 @@ class Handler(BaseHTTPRequestHandler):
                 study = cfg.get("study") or DEFAULT_CONFIG["study"]
                 self._send_json({
                     "trial": True,
+                    # Every /api/config answer carries "open" so the client can read
+                    # one field instead of treating a missing key as a third state.
+                    # A trial visitor of a password-protected instance always gets
+                    # False; trial wins over open in the client's banner anyway.
+                    "open": not password_configured(cfg),
                     "goal_minutes": cfg.get("goal_minutes", 30),
                     "new_cards_per_day": cfg.get("new_cards_per_day", 20),
                     "new_points_per_day": cfg.get("new_points_per_day", 15),
@@ -1324,6 +1355,9 @@ class Handler(BaseHTTPRequestHandler):
                     # show the read-only banner and to explain why AI is refused.
                     "trial": TRIAL_MODE,
                     "trial_owner": TRIAL_MODE and self._token_ok(),
+                    # True when nobody has set a password (local default). The
+                    # client hides the log-out button and says so in the sidebar.
+                    "open": not password_configured(cfg),
                 }
             )
             return
@@ -1462,6 +1496,12 @@ class Handler(BaseHTTPRequestHandler):
             if body is None:
                 self._send_json({"error": "Bad request."}, 400)
                 return
+            if not password_configured(cfg):
+                # No password on this instance: there is nothing to check and no
+                # login screen to reach this from, but answering with a token keeps
+                # an old bookmark or a stale client working instead of dead-ending.
+                self._send_json({"token": make_token(cfg["secret"])})
+                return
             block = login_blocked(client_ip)
             if block:
                 self._send_json({"error": "Too many attempts. Try again later.", "retry_after": block}, 429)
@@ -1483,7 +1523,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "New password must be at least 8 characters."}, 400)
                 return
             cfg = load_config()
-            if not passwords_equal(sha256(old), effective_password_hash(cfg)):
+            # With no password set yet there is nothing to confirm — this is how a
+            # local instance switches auth on for the first time (Settings → Account).
+            if password_configured(cfg) and not passwords_equal(sha256(old), effective_password_hash(cfg)):
                 self._send_json({"error": "Current password is incorrect."}, 401)
                 return
             cfg["password_hash"] = sha256(new)
@@ -1926,12 +1968,24 @@ class ThreadedServer(ThreadingHTTPServer):
 
 def main():
     os.makedirs(DATA_DIR, exist_ok=True)
-    cfg = load_config()  # ensures config.json + secret + password exist
+    cfg = load_config()  # ensures config.json + secret exist
     get_store()  # creates the SQLite DB
     server = ThreadedServer((HOST, PORT), Handler)
-    print("MBBS Revision server running at http://%s:%d" % (HOST, PORT))
-    if not os.environ.get("PASSWORD"):
-        print("Password: '%s' (change it in Settings after logging in)" % DEFAULT_PASSWORD)
+    # flush=True on every line: under launchd (and any redirect to a file) stdout is
+    # block-buffered, so without it the warning below can sit in the buffer unseen
+    # for hours — exactly the line that has to be read.
+    print("MBBS Revision server running at http://%s:%d" % (HOST, PORT), flush=True)
+    if password_configured(cfg):
+        if os.environ.get("PASSWORD"):
+            print("Password: from the PASSWORD environment variable", flush=True)
+        else:
+            print("Password: set (change it in Settings → Account)", flush=True)
+    else:
+        print("Password: none — the site opens without logging in.", flush=True)
+        if HOST not in ("127.0.0.1", "localhost", "::1"):
+            print("  Note: listening on %s, so anyone who can reach this port can"
+                  " read, write and spend your API key." % HOST, flush=True)
+            print("  Set one with: PASSWORD='your-password' ./start.sh  (or Settings → Account)", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

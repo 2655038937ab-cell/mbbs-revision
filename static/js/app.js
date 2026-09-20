@@ -1002,21 +1002,30 @@ async function loadAppConfig() {
   api.setTrialMode(!!appConfig.trial && !appConfig.trial_owner);
   SYS = buildSys();
   applySiteBranding();
-  applyTrialBanner();
+  applyModeBanner();
   return appConfig;
 }
 
-// A short notice in the sidebar, so a trial visitor knows why the AI buttons do
-// nothing before they click one.
-function applyTrialBanner() {
-  const on = !!(appConfig && appConfig.trial && !appConfig.trial_owner);
+// One sidebar notice for the two "no login screen" situations: trial mode (browsing
+// is public, AI is not) and an instance with no password at all (the local default).
+function applyModeBanner() {
+  const trial = !!(appConfig && appConfig.trial && !appConfig.trial_owner);
+  const open = !!(appConfig && appConfig.open);
+  const mode = trial ? "trial" : (open ? "open" : "");
+  // Log out only means something once there is a password to log back in with.
+  const lo = document.getElementById("btn-logout");
+  if (lo) lo.style.display = open ? "none" : "";
   const existing = document.getElementById("trial-banner");
-  if (!on) { if (existing) existing.remove(); return; }
-  if (existing) return;
+  if (!mode) { if (existing) existing.remove(); return; }
+  if (existing && existing.dataset.mode === mode) return;
+  if (existing) existing.remove();
   const el = document.createElement("div");
   el.id = "trial-banner";
-  el.className = "trial-banner";
-  el.innerHTML = "<b>试用版</b> · 可自由浏览全部课程<br><span>AI 生成 / 上传 / 导出需要密码</span>";
+  el.dataset.mode = mode;
+  el.className = "trial-banner" + (mode === "open" ? " open-banner" : "");
+  el.innerHTML = mode === "trial"
+    ? "<b>试用版</b> · 可自由浏览全部课程<br><span>AI 生成 / 上传 / 导出需要密码</span>"
+    : "<b>免密模式</b> · 本机使用无需登录<br><span>想加密码：设置 → Account</span>";
   const nav = document.getElementById("nav");
   if (nav && nav.parentElement) nav.parentElement.insertBefore(el, nav.nextSibling);
 }
@@ -8946,12 +8955,14 @@ async function renderSettings() {
     </div>
     <div class="card" style="margin-top:26px">
       <h3>🔒 Account</h3>
-      <p class="sub" style="margin-bottom:14px">Change your login password. You'll be asked to log in again on other devices.</p>
-      <div class="field"><label>Current password</label><input type="password" id="pw-old" placeholder="Current password"></div>
+      <p class="sub" style="margin-bottom:14px">${appConfig?.open
+        ? "本机模式：当前没有密码，打开网址即可使用；同一网络里的其他人也一样。设置一个密码后，才需要登录。"
+        : "Change your login password. You'll be asked to log in again on other devices."}</p>
+      ${appConfig?.open ? "" : '<div class="field"><label>Current password</label><input type="password" id="pw-old" placeholder="Current password"></div>'}
       <div class="field"><label>New password (min 8 characters)</label><input type="password" id="pw-new" placeholder="New password"></div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <button class="btn btn-primary" id="btn-pw">Update password</button>
-        <button class="btn btn-ghost" id="btn-logout2">🚪 Log out</button>
+        <button class="btn btn-primary" id="btn-pw">${appConfig?.open ? "设置密码" : "Update password"}</button>
+        ${appConfig?.open ? "" : '<button class="btn btn-ghost" id="btn-logout2">🚪 Log out</button>'}
         <span class="sub" id="pw-msg"></span>
       </div>
     </div>`;
@@ -9034,14 +9045,19 @@ async function renderSettings() {
     toast(`自动保存间隔设为 ${n} 秒`, "success");
   });
   $("#btn-pw").addEventListener("click", async () => {
-    const r = await api.changePassword($("#pw-old").value, $("#pw-new").value);
+    const oldEl = $("#pw-old");  // absent while the instance has no password
+    const r = await api.changePassword(oldEl ? oldEl.value : "", $("#pw-new").value);
     if (r.error) { $("#pw-msg").textContent = r.error; return; }
     if (r.token) api.setToken(r.token);
     $("#pw-msg").textContent = "Password updated ✓";
-    toast("Password updated", "success");
-    $("#pw-old").value = ""; $("#pw-new").value = "";
+    toast(appConfig?.open ? "密码已设置，其它设备现在需要登录" : "Password updated", "success");
+    $("#pw-new").value = "";
+    // The banner and the log-out button depend on whether a password exists now.
+    await loadAppConfig();
+    renderSettings();
   });
-  $("#btn-logout2").addEventListener("click", () => { api.setToken(""); showLogin(); });
+  const lo2 = $("#btn-logout2");  // absent while the instance has no password
+  if (lo2) lo2.addEventListener("click", () => { api.setToken(""); showLogin(); });
   $("#btn-drive-save").addEventListener("click", async () => {
     const id = ($("#drive-folder").value || "").trim();
     const proxy = ($("#drive-proxy").value || "").trim();

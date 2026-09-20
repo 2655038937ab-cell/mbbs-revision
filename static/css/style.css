@@ -74,6 +74,9 @@ body {
 .trial-banner { margin-top: 12px; padding: 10px 12px; border-radius: 10px; font-size: 12px; line-height: 1.5;
   color: var(--amber); background: var(--amber-soft); border: 1px solid rgba(217, 119, 6, .35); }
 .trial-banner span { color: var(--text-2); }
+/* Same slot for a password-less local instance — informational, not a warning. */
+.trial-banner.open-banner { color: var(--accent); background: rgba(37, 99, 235, .10);
+  border-color: rgba(37, 99, 235, .30); }
 
 /* ---------- Main ---------- */
 #main { flex: 1; margin-left: var(--sidebar-w); min-height: 100vh; }

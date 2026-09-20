@@ -1941,8 +1941,8 @@ async function runHiddenTool(tool, out) {
 // A quick integrity pass over everything the client can see without extra APIs.
 async function hiddenHealthReport() {
   const [lessons, cards, quizzes, images] = await Promise.all([
-    db.getAll("lessons").catch(() => []),
-    db.getAll("cards").catch(() => []),
+    db.getAllLite("lessons").catch(() => []),
+    db.getAllLite("cards").catch(() => []),
     db.getAll("quizzes").catch(() => []),
     db.getAll("lessonImages").catch(() => []),
   ]);
@@ -2105,7 +2105,7 @@ function navigate(view) {
 
 async function refreshBadges() {
   const [cards, lessons, mistakes] = await Promise.all([
-    db.getAll("cards"), db.getAll("lessons"), db.getAll("mistakes"),
+    db.getAllLite("cards"), db.getAllLite("lessons"), db.getAll("mistakes"),
   ]);
   const plan = planStudyQueue(cards, lessons, mistakes);
   const dueTotal = plan.entries.length;
@@ -2122,7 +2122,7 @@ async function refreshBadges() {
 /* ---------------- Dashboard ---------------- */
 async function renderDashboard() {
   const [lessons, cards, mistakes, log, quizzes] = await Promise.all([
-    db.getAll("lessons"), db.getAll("cards"), db.getAll("mistakes"), db.getAll("studyLog"), db.getAll("quizzes"),
+    db.getAllLite("lessons"), db.getAllLite("cards"), db.getAll("mistakes"), db.getAll("studyLog"), db.getAll("quizzes"),
   ]);
   const now = Date.now();
   const plan = planStudyQueue(cards, lessons, mistakes, now);
@@ -2414,7 +2414,7 @@ async function renameLesson(lessonId) {
 /* ---------------- Lessons list ---------------- */
 async function renderLessons() {
   const [lessons, cards, quizzes, cls, folders] = await Promise.all([
-    db.getAll("lessons"), db.getAll("cards"), db.getAll("quizzes"), api.getClassification().catch(() => ({ categories: [], manual: {} })), (db.getAll("folders").catch(() => []) || []),
+    db.getAllLite("lessons"), db.getAllLite("cards"), db.getAll("quizzes"), api.getClassification().catch(() => ({ categories: [], manual: {} })), (db.getAll("folders").catch(() => []) || []),
   ]);
   currentFolders = folders || [];
   const mastery = computeMasteryMap(lessons, cards, quizzes);
@@ -2558,7 +2558,7 @@ async function renderLessons() {
   $("#view").querySelectorAll(".chip[data-delfolder]").forEach((c) => c.addEventListener("click", async () => {
     if (!confirm("删除这个文件夹？（里面的课会变成未分类）")) return;
     await db.delete("folders", c.dataset.delfolder);
-    const ls = await db.getAll("lessons");
+    const ls = await db.getAllLite("lessons");
     for (const l of ls) if (l.folderId === c.dataset.delfolder) { l.folderId = null; await db.put("lessons", l); }
     if (lessonsFolderFilter === c.dataset.delfolder) lessonsFolderFilter = "";
     toast("文件夹已删除 ✓", "success");
@@ -2929,7 +2929,7 @@ async function renderLessonDetailBody() {
   // Build the ordered lesson list once for quick prev/next switching. Use the
   // same "course code" grouping the Lessons list shows, so ◀ ▶ follow the order
   // you see on the page (e.g. CPR04 → CPR63 → GIS06).
-  const all = await db.getAll("lessons");
+  const all = await db.getAllLite("lessons");
   lessonOrder = all
     .map((l) => ({ id: l.id, createdAt: l.createdAt || 0, code: courseGroup(l.title) || "" }))
     .sort((a, b) => (compareCodeLabels(a.code, b.code) || ((a.createdAt || 0) - (b.createdAt || 0))))
@@ -5256,7 +5256,7 @@ async function runUpload(files, opts) {
   // Guard against accidental re-uploads: warn when a file would produce a
   // course whose title already exists (the usual cause of duplicate courses).
   try {
-    const existing = await db.getAll("lessons");
+    const existing = await db.getAllLite("lessons");
     const have = new Set((existing || []).map((l) => String(l.title || "").trim().toLowerCase()));
     const dupes = valid.filter((f) => {
       const guess = (f.name || "").replace(/\.(pptx?|pdf)$/i, "").replace(/[-_]+/g, " ").trim().toLowerCase();
@@ -5639,7 +5639,7 @@ function openCreateText(presetBody = "") {
 // Lessons are processed serially so many don't generate concurrently (which
 // would overload the AI gateway and freeze the UI).
 async function generateAllMissing() {
-  const lessons = await db.getAll("lessons").catch(() => []);
+  const lessons = await db.getAllLite("lessons").catch(() => []);
   const missing = lessons.filter((l) => !(l.points || []).length);
   if (!missing.length) { toast("所有课程都已生成笔记 ✓", "success"); return; }
   if (!confirm(`将依次生成 ${missing.length} 门未生成笔记的课程（知识点/闪卡/题目/配图）。\n按顺序进行，需要较长时间。确定继续？`)) return;
@@ -6198,7 +6198,7 @@ async function reclassifyCurrentLesson(lessonId) {
 }
 
 async function reclassifyAllLessons() {
-  const all = await db.getAll("lessons");
+  const all = await db.getAllLite("lessons");
   const targets = (all || []).filter((l) => (l.points || []).length && (l.slides || []).length);
   if (!targets.length) { toast("没有可整理的课程", "error"); return; }
   if (!confirm(`将重新整理 ${targets.length} 门课的分类（不重新生成内容，每门约 2 次 AI 调用）。继续？`)) return;
@@ -7288,7 +7288,7 @@ function lpRow(x) {
 
 async function renderProgress() {
   const [lessons, cards, quizzes, log] = await Promise.all([
-    db.getAll("lessons"), db.getAll("cards"), db.getAll("quizzes"), db.getAll("studyLog"),
+    db.getAllLite("lessons"), db.getAllLite("cards"), db.getAll("quizzes"), db.getAll("studyLog"),
   ]);
   const t = computeTimeStats(log);
 
@@ -7859,7 +7859,7 @@ async function renderFavs() {
   // A starred question outlives its lesson (deleting a lesson removes its
   // favourites, but a restore or an import can still leave one behind), so the
   // lesson lookup is allowed to miss.
-  const lessons = await db.getAll("lessons").catch(() => []);
+  const lessons = await db.getAllLite("lessons").catch(() => []);
   const lessonById = new Map((lessons || []).map((l) => [l.id, l]));
 
   if (!all.length) {
@@ -8709,7 +8709,7 @@ async function openSlide(lessonId, slideIndex) {
 
 async function renderKnowledgeNav() {
   const [lessons, cards, quizzes] = await Promise.all([
-    db.getAll("lessons"), db.getAll("cards"), db.getAll("quizzes"),
+    db.getAllLite("lessons"), db.getAllLite("cards"), db.getAll("quizzes"),
   ]);
   const mastery = computeMasteryMap(lessons, cards, quizzes);
   const withPoints = lessons.filter((l) => (l.points || []).length).sort((a, b) => b.createdAt - a.createdAt);

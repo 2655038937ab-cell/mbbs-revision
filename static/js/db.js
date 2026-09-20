@@ -68,6 +68,22 @@ export const db = {
     _listT.set(store, Date.now());
     return items;
   },
+  async getAllLite(store) {
+    // Scheduling-only view of a store: point explanations and slide text, and a
+    // card's front/back, are left out. Those are read by the review screen, the
+    // full-text search and the formula library, which fetch the full list
+    // themselves. Browsing views (dashboard, lesson list, knowledge tree, progress,
+    // sidebar badges) need none of it, and on a 258-lesson library this is the
+    // difference between 5.2 MB and 1.5 MB on every page load.
+    const key = `${store}:lite`;
+    const hit = _thawCache(key);
+    if (hit) return hit;
+    const d = await j(await authedFetch(`/api/store/${store}?lite=1`));
+    const items = d.items || [];
+    _listCache.set(key, items);
+    _listT.set(key, Date.now());
+    return items;
+  },
   async getAllFull(store) {
     // Lessons are returned without image payloads by default; backups need
     // the full records (add ?full=1, which other stores ignore).

@@ -587,7 +587,7 @@ def mask_key(key):
     return ("*" * max(0, len(key) - 4)) + key[-4:] if len(key) > 4 else "****"
 
 
-def slim_lesson(rec):
+def slim_lesson(rec, lite=False):
     """Drop the fields that only the per-lesson views read.
 
     Measured on the real 258-lesson library, these are 39% of the list payload:
@@ -600,6 +600,13 @@ def slim_lesson(rec):
     slide text (full-text search), mnemonic and tags (search), point titles and
     categories (knowledge tree, mastery), and each image's kind/name (the page image
     is found by kind === 'page').
+
+    `lite=True` goes one step further and drops the two fields that only the search,
+    review and formula-library views read: the point explanations and the slide text.
+    Those three views ask for the full list themselves, so the everyday payload —
+    dashboard, lesson list, knowledge tree, progress, badges — carries neither. On
+    the real library that is 3.8 MB of gzipped JSON down to 1.1 MB, which matters a
+    great deal when the instance is stuck on a slow public link.
     """
     if not isinstance(rec, dict):
         return rec
@@ -612,6 +619,8 @@ def slim_lesson(rec):
             continue
         s2 = dict(s)
         s2.pop("notes", None)
+        if lite:
+            s2.pop("text", None)
         imgs = []
         for im in s.get("images") or []:
             if not isinstance(im, dict):
@@ -627,9 +636,25 @@ def slim_lesson(rec):
         if not isinstance(p, dict):
             points.append(p)
             continue
-        points.append({k: v for k, v in p.items() if k not in ("keyTerms", "supplement")})
+        skip = {"keyTerms", "supplement"} | ({"explanation"} if lite else set())
+        points.append({k: v for k, v in p.items() if k not in skip})
     out["points"] = points
     return out
+
+
+# Card fields the list-level views actually read: the scheduler needs the timing
+# state, the mastery maths needs interval/reps, and the queue needs the lesson.
+# front/back are the card's content and are read only by the review screen, the
+# full-text search and the flashcards tab (which fetches per lesson).
+CARD_LITE_FIELDS = ("id", "lessonId", "ease", "interval", "reps", "lapses", "due",
+                    "createdAt", "newDoneAt", "lastReviewed")
+
+
+def slim_card(rec, lite=False):
+    """Keep only the scheduling fields of a card for list-level views (1.4 MB -> 0.3 MB)."""
+    if not lite or not isinstance(rec, dict):
+        return rec
+    return {k: rec[k] for k in CARD_LITE_FIELDS if k in rec}
 
 
 def slim_quiz(rec):
@@ -996,7 +1021,10 @@ _STORE_CACHE_LOCK = threading.Lock()
 
 
 def _cache_key(store, params):
-    return store + "|" + "|".join(str(params[k] if params.get(k) is not None else "") for k in ("lessonId", "full", "light"))
+    # "lite" MUST be part of the key: the light and full bodies of one store are
+    # different payloads, and sharing a key would serve whichever was built first.
+    return store + "|" + "|".join(str(params[k] if params.get(k) is not None else "")
+                                  for k in ("lessonId", "full", "light", "lite"))
 
 
 def _encoded_cache_get(store, params):
@@ -1330,7 +1358,9 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 1:
                 lesson_id = query.get("lessonId", [None])[0]
                 full = query.get("full", ["0"])[0] == "1"
-                params = {"lessonId": lesson_id, "full": "1" if full else "0", "light": "0"}
+                lite = query.get("lite", ["0"])[0] == "1"
+                params = {"lessonId": lesson_id, "full": "1" if full else "0", "light": "0",
+                          "lite": "1" if lite else "0"}
                 # The encoded body IS the cache for a list: it already carries the
                 # ETag, and serving it directly skips the query, the slim pass, the
                 # json.dumps and the gzip. (An earlier object-level cache answered
@@ -1351,7 +1381,9 @@ class Handler(BaseHTTPRequestHandler):
                 # backup export) and ?lessonId= (the lesson detail) keep everything.
                 if lesson_id is None and not full:
                     if parts[0] == "lessons":
-                        items = [slim_lesson(rec) for rec in items]
+                        items = [slim_lesson(rec, lite) for rec in items]
+                    elif parts[0] == "cards":
+                        items = [slim_card(rec, lite) for rec in items]
                     elif parts[0] == "quizzes":
                         items = [slim_quiz(rec) for rec in items]
                 self._send_store_json(parts[0], params, {"items": items})

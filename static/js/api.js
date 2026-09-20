@@ -20,6 +20,13 @@ export async function authedFetch(url, opts = {}) {
   return resp;
 }
 
+// Trial mode (set from the server's config): this browser may browse but not spend
+// the owner's API credit. Saying so here means every AI entry point — generate,
+// regenerate, OCR, figure captions — reports one understandable sentence instead of
+// a bare "unauthorized" from deep inside a progress panel.
+let _trialMode = false;
+const TRIAL_AI_MESSAGE = "试用版仅可浏览；AI 生成需要密码（登录后即可使用）";
+
 async function json(resp) {
   const data = await resp.json().catch(() => ({ error: "Bad response" }));
   if (!resp.ok && !data.error) data.error = "HTTP " + resp.status;
@@ -53,6 +60,8 @@ async function withRetry(fn, retries = 2) {
 
 export const api = {
   setToken,
+  setTrialMode(on) { _trialMode = !!on; },
+  isTrialMode() { return _trialMode; },
 
   async login(password) {
     return json(await fetch("/api/auth/login", {
@@ -98,18 +107,26 @@ export const api = {
       body: JSON.stringify(data),
     }));
   },
-  async parseFile(file) {
+  // opts (PDF only): pageRange ("1-20, 30") slices before rendering;
+  // compress ("high"|"medium"|"low") picks the render-quality preset.
+  async parseFile(file, opts = {}) {
+    const headers = {
+      "Content-Type": "application/octet-stream",
+      "X-Filename": encodeURIComponent(file.name),
+    };
+    if (opts.pageRange) headers["X-Page-Range"] = String(opts.pageRange);
+    if (opts.compress) headers["X-Pdf-Compress"] = String(opts.compress);
+    if (opts.dpi) headers["X-Parse-Dpi"] = String(opts.dpi);
+    if (opts.quality) headers["X-Parse-Quality"] = String(opts.quality);
     const resp = await authedFetch("/api/parse", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/octet-stream",
-        "X-Filename": encodeURIComponent(file.name),
-      },
+      headers,
       body: file,
     });
     return json(resp);
   },
   async llm(messages, opts = {}) {
+    if (_trialMode) return { error: TRIAL_AI_MESSAGE };
     const ctx = (typeof window !== "undefined" && window.__llmCtx) || {};
     return withRetry(async () => {
       const resp = await authedFetch("/api/llm", {
@@ -122,6 +139,10 @@ export const api = {
           temperature: opts.temperature ?? 0.2,
           json_mode: opts.json_mode ?? false,
           reasoning_effort: opts.reasoning_effort ?? "low",
+          // Opt back into the model's reasoning pass for the few steps that
+          // genuinely benefit (e.g. the lecture topic outline). Unset = the
+          // server's cost-saving default (thinking disabled on DeepSeek).
+          thinking: opts.thinking || undefined,
           slot: opts.slot || ctx.slot || "",
           lessonId: opts.lessonId || ctx.lessonId || "",
           lessonTitle: opts.lessonTitle || ctx.lessonTitle || "",
@@ -131,6 +152,7 @@ export const api = {
     });
   },
   async vision(imageDataUrl, prompt, opts = {}) {
+    if (_trialMode) return { error: TRIAL_AI_MESSAGE };
     const ctx = (typeof window !== "undefined" && window.__llmCtx) || {};
     return withRetry(async () => {
       const resp = await authedFetch("/api/vision", {
@@ -139,7 +161,7 @@ export const api = {
         body: JSON.stringify({
           image: imageDataUrl,
           prompt,
-          max_tokens: opts.max_tokens || 800,
+          max_tokens: opts.max_tokens || 3000,
           slot: opts.slot || ctx.slot || "",
           lessonId: opts.lessonId || ctx.lessonId || "",
           lessonTitle: opts.lessonTitle || ctx.lessonTitle || "",

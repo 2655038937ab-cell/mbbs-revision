@@ -93,8 +93,43 @@ def build_pdf(lesson, quiz):
     return buf.getvalue()
 
 
+def _match_card_figure(lesson, card):
+    """Pick a figure relevant to a flashcard, mirroring the card's concept onto a
+    knowledge point -> its slide -> a non-logo/non-page image. Returns
+    (image_bytes, filename) or None."""
+    import base64, re
+    def words(s):
+        return set(re.findall(r"[a-z0-9]{3,}", (s or "").lower()))
+    text = words(card.get("front")) | words(card.get("back"))
+    if not text:
+        return None
+    best, best_score = None, 0
+    for p in (lesson.get("points") or []):
+        score = len(text & words(p.get("title")))
+        if score > best_score:
+            best, best_score = p, score
+    if not best or best_score < 2:
+        return None
+    slide_idx = str(best.get("slide"))
+    slide = next((s for s in (lesson.get("slides") or []) if str(s.get("index")) == slide_idx), None)
+    if not slide:
+        return None
+    im = next((i for i in slide.get("images") or [] if isinstance(i, dict) and i.get("dataUrl") and i.get("kind") not in ("page", "logo")), None)
+    if not im:
+        return None
+    try:
+        raw = base64.b64decode(im["dataUrl"].split(",", 1)[1])
+    except Exception:
+        return None
+    mime = im.get("mime") or "image/jpeg"
+    ext = mime.split("/")[-1].split("+")[0].replace("jpeg", "jpg")
+    fname = "fig_%s_%s.%s" % (slide_idx, (best.get("title") or "fig").replace(" ", "_")[:24].replace("/", ""), ext)
+    return raw, fname
+
+
 def build_apkg(lesson, cards):
-    """Return .apkg bytes from lesson flashcards."""
+    """Return .apkg bytes from lesson flashcards, embedding a relevant figure on
+    each card (so the deck shows the associated diagram/image)."""
     deck_id = abs(hash(lesson.get("id") or "deck")) % (2**31 - 1)
     model_id = abs(hash(lesson.get("id") or "model")) % (2**31 - 1) + 1
 
@@ -114,11 +149,25 @@ def build_apkg(lesson, cards):
             },
         ],
     )
+    media_paths = []
+    media_tmpdir = tempfile.mkdtemp(prefix="mbbs_anki_")
+    seen = set()
     for c in cards:
         front = _clean_for_anki(c.get("front"))
         back = _clean_for_anki(c.get("back"))
         if not front:
             continue
+        fig = _match_card_figure(lesson, c)
+        if fig:
+            raw, fname = fig
+            if fname not in seen:
+                seen.add(fname)
+                p = os.path.join(media_tmpdir, fname)
+                with open(p, "wb") as fh:
+                    fh.write(raw)
+                media_paths.append(p)
+            # Reference the image in Anki HTML (media file bundled in the .apkg).
+            front = front + '<br><img src="%s">' % fname
         try:
             note = genanki.Note(model=model, fields=[front, back])
             deck.add_note(note)
@@ -126,12 +175,17 @@ def build_apkg(lesson, cards):
             continue
 
     if len(deck.notes) == 0:
+        import shutil as _sh
+        _sh.rmtree(media_tmpdir, ignore_errors=True)
         return None
 
     with tempfile.NamedTemporaryFile(suffix=".apkg", delete=False) as tmp:
         tmpname = tmp.name
     try:
-        genanki.Package(deck).write_to_file(tmpname)
+        pkg = genanki.Package(deck)
+        if media_paths:
+            pkg.media_files = media_paths
+        pkg.write_to_file(tmpname)
         with open(tmpname, "rb") as fh:
             return fh.read()
     finally:
@@ -139,6 +193,8 @@ def build_apkg(lesson, cards):
             os.unlink(tmpname)
         except OSError:
             pass
+        import shutil as _sh
+        _sh.rmtree(media_tmpdir, ignore_errors=True)
 
 
 def build_http(proxy=None, timeout=90):

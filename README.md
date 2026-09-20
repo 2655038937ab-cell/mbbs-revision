@@ -1,78 +1,380 @@
-# MBBS Revision — Active-Recall Study App
+# MBBS Revision · 主动回忆学习系统
 
-A private, self-hosted study companion for medical lectures. Upload a **PowerPoint (.pptx)**
-or **PDF**, and it will:
+自托管的课件复习系统：上传 **PDF / PPTX**，自动提炼知识点、生成闪卡与选择题，并按间隔重复
+安排「今天该复习什么」。所有数据存在你自己的服务器上（SQLite），用一个密码保护，
+换设备登录看到的是同一份进度。
 
-1. **Parse** the file (slide/page text + figures + speaker notes).
-2. **Distill key points** with AI (DeepSeek `deepseek-v4-pro`).
-3. **Generate** active-recall flashcards and single-best-answer MCQ quizzes.
-4. **Caption figures & diagrams** with a vision model (DeepSeek `deepseek-v4-flash-vision-exp` via the opencode proxy).
-5. **Schedule reviews** with spaced  SM-2 for flashcards plus Feynman re-test intervals for key points, merged into one daily study queue with per-day new-card/new-point limits.
-6. **Track mistakes** in a mistake notebook that re-tests you until mastered.
-7. **Log study time & progress** (streaks, per-lesson mastery).
+界面文案是英文，**内容语言可配置**（中文 / 英文 / 中英对照），学科重点随课程自适应。
 
-Everything is stored **on the server (SQLite)** and guarded by a **password**, so any
-device you log in from sees the same lessons, cards, mistakes and progress.
+---
 
-## Run it (locally)
+## 目录
 
-Prerequisites: **Python 3.9+** and **git** (or download the repo as a ZIP and extract it).
+- [1. 能做什么](#1-能做什么)
+- [2. 快速开始](#2-快速开始)
+- [3. 首次配置](#3-首次配置)
+- [4. 日常用法](#4-日常用法)
+- [5. 部署](#5-部署)
+- [6. 命令行工具](#6-命令行工具)
+- [7. 数据与备份](#7-数据与备份)
+- [8. 常见问题](#8-常见问题)
+- [9. 安全说明](#9-安全说明)
+- [10. 项目结构](#10-项目结构)
+
+---
+
+## 1. 能做什么
+
+**输入**：PDF、PowerPoint、截图、纯文字（可粘贴）。支持一次传多个文件、只解析指定页码范围、
+多个文件合并成一门课。
+
+**AI 加工**（每一步都能单独重做）：
+
+| 产物 | 说明 |
+|---|---|
+| **知识点** | 三级分类（主题 › 子主题 › 要点），带解析、关键词、助记、配图、来源页码 |
+| **闪卡** | 主动回忆用，SM-2 间隔重复排程 |
+| **选择题** | 单选最佳答案，每条知识点至少一题，带解析 |
+| **配图说明** | 自动识别课件里的插图/示意图并写说明 |
+
+**学习**：今日学习队列（闪卡 SM-2 + 知识点 0/1/3/7/14/30 天重测）、错题本、公式库、
+知识导航、全文搜索（课程/知识点/闪卡/题干/错题）、进度与打卡、Token 消耗统计、
+公式用 KaTeX 排版、桌宠与番茄钟。
+
+**细节**：知识点可按「主题树」或「按讲义顺序」两种顺序阅读；题目可收藏成重点题集；
+答题页可以往回翻看已答过的题，并保留每次作答的历史记录。
+
+---
+
+## 2. 快速开始
+
+需要 **Python 3.9+**（macOS / Linux）。首次运行会自动创建虚拟环境并安装依赖。
 
 ```bash
-# 1. clone (or you downloaded the ZIP and opened the folder)
-git clone <your-repo-url> mbbs-revision
+git clone https://github.com/2655038937ab-cell/mbbs-revision.git
 cd mbbs-revision
-
-# 2. run — it creates a local venv, installs PyMuPDF, and starts the server
-./start.sh
+./start.sh                      # 首次会自动建 .venv 并安装 PyMuPDF
 ```
 
-Then open **http://127.0.0.1:8756** and log in. The default password is `mbbs1234` — change it immediately in **Settings → Account**.
+打开 **http://127.0.0.1:8756**，默认密码 **`mbbs1234`** —— 登录后请立刻改掉。
 
-> To set a password from the start: `PASSWORD='your-password' ./start.sh`
->
-> On Linux/macOS make `start.sh` executable first: `chmod +x start.sh`
+想一开始就设密码：
 
-## First-time setup
+```bash
+PASSWORD='你的密码' ./start.sh
+```
 
-After logging in, open **Settings** and paste your API key(s). This app talks to the
-models through the **opencode** proxy (`opencode.ai/zen/go/v1`), so one opencode
-API key covers both text and vision:
+> Windows：`pip install -r requirements.txt` 然后 `python server.py`。
 
-| Purpose | Provider | Base URL | Model |
-|---|---|---|---|
-| Text (notes/cards/quiz) | opencode 代理 | `https://opencode.ai/zen/go/v1` | `deepseek-v4-flash` |
-| Vision (figures / OCR) | opencode 代理 | `https://opencode.ai/zen/go/v1` | `deepseek-v4-flash-vision-exp` |
+### 可选环境变量
 
-- **Where to get the key**: create an account on **https://opencode.ai** and copy its
-  API key. In the site's **Settings → Text model**, paste that key into the **API key**
-  field. The Vision model reuses the same key (they share it), so you don't need a second one.
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `PASSWORD` | `mbbs1234` | 登录密码。**设置后会覆盖「设置里改的密码」**（见 [3.3](#33-改密码)） |
+| `REVISION_DATA_DIR` | `./data` | 数据目录（`config.json` + `data.db`）。**多开站点靠它隔离** |
+| `PORT` | `8756` | 监听端口 |
+| `HOST` | `0.0.0.0` | 监听地址 |
+| `MAX_UPLOAD_MB` | `150` | 单个上传文件上限 |
+| `MAX_BODY_MB` | `200` | 请求体上限（应大于上传上限） |
+| `TRIAL_MODE` | 关闭 | `1` = 试用模式，见 [5.3](#53-试用模式trial_mode) |
 
-Keys are saved to `data/config.json` on the server, shared across your devices.
+---
 
-## Deploy to the internet (use from another computer)
+## 3. 首次配置
 
-See **[DEPLOY.md](DEPLOY.md)** — Railway, Docker on a VPS, or Render.
-You'll set a `PASSWORD` env var and mount the `data/` directory as persistent storage.
+登录后进 **Settings**，三件事。
 
-## Requirements
+### 3.1 填 API key
 
-- Python 3.9+
-- PyMuPDF (auto-installed into a local `.venv` on first run; `requirements.txt` for Docker)
+默认**文本和视觉都用 DeepSeek 官方**，一个 key 全搞定：
 
-## File layout
+| 用途 | Base URL | 模型 |
+|---|---|---|
+| 文本（知识点/闪卡/题目） | `https://api.deepseek.com` | `deepseek-flash` |
+| 视觉（配图说明 / OCR） | `https://api.deepseek.com` | `deepseek-flash`（原生多模态） |
 
-- `server.py` — HTTP server: static files + auth + SQLite REST API + parse + AI proxy.
-- `store.py` — SQLite record store (server-side persistence).
-- `ppt_parser.py` — pure-stdlib PPTX parser (text, images, notes).
-- `pdf_parser.py` — PDF parser (PyMuPDF): text + rendered page images.
-- `static/` — the single-page frontend (vanilla JS, no build step).
-- `data/` — `config.json` (keys + password) and `data.db` (all your data). **Back this up.**
-- `Dockerfile`, `DEPLOY.md` — cloud deployment.
+Key 在 <https://platform.deepseek.com> 申请。也可以在 `vision_presets` 里切到其它视觉服务
+（例如阿里云百炼 `qwen-vl-max`）。Key 只存在服务器的 `data/config.json`，**不下发到浏览器**。
 
-## Notes
+> **成本提示**：默认**关闭思考模式**（reasoning），因为一节课的思考 token 常常比正文还贵。
+> 省钱的关键是别整门课全量重生成，按需只重做某一步（例如只重出题目）。
 
-- Old binary **.ppt** files aren't supported — open in PowerPoint/Keynote and "Save As .pptx".
-- **Scanned / image-only PDFs** are auto-detected: pages with no text layer are read by the
-  vision model (OCR) during "Generate study set", so they still produce notes and questions.
-- PDFs with a real text layer use the embedded text directly (faster, no extra AI calls).
+### 3.2 填站点信息与学科
+
+**Settings → Study profile**：站点标题、副标题、学习者描述、**内容语言**（中文/英文/中英对照）、
+学科列表（每个学科可写关键词和「重点方向」，AI 会据此调整提炼重点）。
+内置 `mbbs`（MBBS 医学）与 `pku-sciences`（理科）两套预设。
+
+### 3.3 改密码
+
+**Settings → Account**。
+
+> ⚠️ 如果你是用 `PASSWORD=... ./start.sh` 启动的，**环境变量的优先级高于这里**：
+> 界面上改密码不会生效（登录仍以环境变量为准）。想让界面改密码生效，就别设 `PASSWORD`。
+
+忘记密码：把 `data/config.json` 里的 `password_hash` 清成 `""` 后重启（回落默认密码），
+或者直接用 `PASSWORD='新密码'` 启动覆盖。
+
+---
+
+## 4. 日常用法
+
+### 4.1 上传课件
+
+**Lessons → ＋ Upload lesson**：
+
+- 支持 **PDF / PPTX / 图片（截图）/ 纯文字**，可**一次选多个文件**
+- **页码范围**：只看某几页就填 `1-20`、`3,5,7-9` 这样（真正只解析这些页）
+- **多文件合并成一门课**：开关默认开启
+- **粘贴功能**：把课件文字或笔记直接粘进文本框，就能当一门课保存
+- 上传时可设 PDF 压缩档位（`high/medium/low`）；扫描版可以走 OCR（需要视觉 key）
+- 老式二进制 **.ppt 不支持** —— 先用 PowerPoint/Keynote 另存为 `.pptx`
+
+### 4.2 生成内容
+
+传到课程页后点 **✨ 生成**；之后随时可以 **重新生成**，或只重做某一步
+（题目 / 闪卡 / 配图 / 知识点）。过程有进度条，可随时取消。
+
+生成顺序（重要）：**先读图写说明 → 再提炼知识点 → 覆盖率补漏 → 闪卡 → 题目**。
+图注参与知识点提炼，所以「整页就是一张图」的幻灯片也不会被漏掉。
+
+### 4.3 读笔记：课程页的六个标签
+
+| 标签 | 用途 |
+|---|---|
+| **知识点** | 阅读主体。右上角可切换 **🌳 按主题** / **📄 按讲义顺序**；可按重要度、未掌握筛选 |
+| **闪卡** | 卡片浏览与手动翻卡 |
+| **Quiz** | 题目银行、开始答题、预览题目、收藏状态 |
+| **Mindmap** | 三级主题脑图 |
+| **Figures** | 本课所有插图与图注 |
+| **Slides** | 幻灯片原页（含文字与演讲者备注） |
+
+知识点卡片显示来源页码与来源插图，点图可放大；每条知识点都能写自己的备注。
+
+### 4.4 复习：今日学习
+
+把三类任务合并成一条队列：**到期的闪卡**（SM-2）、**到期的知识点**（Feynman 间隔重测）、
+**到期错题**。每日新卡/新知识点有上限（Settings 可调），用超了自动留到明天。
+每条都要求你**先自己回忆再翻答案**；知识点会要求你写出推导或解释，再对照解析 —— 
+「为什么是这个结论」比结论本身更重要。
+
+### 4.5 选择题与回看
+
+- **▶ Take quiz**：一题一屏，答完立即给解析；答错自动进错题本
+- **◀ 上一题**：**答过的题可以往回翻**，只读显示「你的选择 / 正确答案 / 解析」（已作答不可改）
+- **🕘 回看已答**：在答题页就地打开回看列表，可按 **全部已答 / 只答错 / 只答对 / 未答** 筛选
+- 快捷键：`←` `→` 翻页，`空格` 下一题，`Esc` 退出回看
+- **多次作答历史**：每次交卷都会存档，回看时可切换「第 1 次 / 第 2 次…」，带日期与得分
+- 交卷页有 **「回看答错的 N 题」** 直达错题回看
+
+### 4.6 收藏题目
+
+在题目银行、预览模式或答题过程中，点题目右上角 **☆** 即可收藏。
+左侧 **⭐ 收藏题目** 是按课程分组的收藏集，可搜索、可一键回到原课程的 Quiz；
+题目银行还有 **☆ 只看收藏 (n)** 开关，考前只看重点题。
+
+> 收藏保存的是**题目快照**，所以之后「重生成题目」不会把收藏弄丢。
+
+### 4.7 其它页面
+
+- **知识导航**：跨课程的三级主题树
+- **Mistakes**：错题本，反复重测直到掌握
+- **Progress**：每门课的掌握度（知识点 / 闪卡 / 题目三部分加权）、打卡与学习时长
+- **公式库**：按学科汇总公式与反应式，KaTeX 排版，含常用场景与例题
+- **Search**：一次搜课程、知识点、闪卡、题干、错题
+- **Token 统计**：各步骤 token 消耗，方便控成本
+
+### 4.8 隐藏菜单
+
+**连点侧边栏左上角站点标题 5 次**打开，里面有：
+
+- 导出全部数据（JSON 备份，含知识点/闪卡/题目/收藏）
+- 服务器自检（课程数、孤儿记录、上传上限等）
+- 一键重排所有课程的分类
+- 隐藏 / 恢复课程分组（只是显示偏好，不动数据）
+
+---
+
+## 5. 部署
+
+### 5.1 本机再开一个站
+
+两个环境变量就能多开，数据彼此完全隔离（例如一个 MBBS 站、一个 PKU 站）：
+
+```bash
+PORT=8757 REVISION_DATA_DIR="$PWD/data-pku" ./start.sh
+```
+
+macOS 想开机自启，可用 `launchd`：把上面两个变量写进 LaunchAgent 的
+`EnvironmentVariables`，`ProgramArguments` 指向 `start.sh`。
+
+### 5.2 云端部署（Docker）
+
+任何装了 Docker 的 VPS：
+
+```bash
+git clone https://github.com/2655038937ab-cell/mbbs-revision.git mbbs && cd mbbs
+docker build -t mbbs .
+docker run -d --name mbbs --restart unless-stopped \
+  -p 8756:8756 \
+  -v /home/admin/mbbs-data:/app/data \
+  -e PASSWORD='一个强密码' \
+  mbbs
+```
+
+`/app/data` 必须挂载出来 —— 里面是 `config.json`（key + 密码）和 `data.db`（全部内容）。
+要 HTTPS 就在前面放 Caddy / Nginx，或套 Cloudflare。
+
+**更新已部署的站**：`static/` 是打包进镜像的，所以**改前端也要重新 build**，只换文件不生效。
+
+```bash
+scp server.py store.py exporters.py pdf_parser.py ppt_parser.py Dockerfile requirements.txt \
+    admin@<ip>:/path/to/app/
+scp -r static admin@<ip>:/path/to/app/
+ssh admin@<ip> 'cd /path/to/app && docker build -t mbbs . && docker rm -f mbbs && \
+  docker run -d --name mbbs --restart unless-stopped \
+  -v /path/mbbs-data:/app/data -e PASSWORD="..." mbbs'
+```
+
+> **大库迁移**：数据库到 GB 级时上传很慢。建议 `gzip` 后分块并行上传（可断点重试），
+> 换库前**先停容器**，并删除旧的 `data.db-wal` / `data.db-shm`，否则会污染新库。
+
+### 5.3 试用模式（TRIAL_MODE）
+
+想让人**免密码浏览**、又不想让别人花你的 API 余额，用试用模式：
+
+```bash
+docker run -d --name mbbs ... -e TRIAL_MODE=1 mbbs
+```
+
+| | 访客（免密码） | 站长（登录后） |
+|---|---|---|
+| 课程 / 知识点 / 闪卡 / 题目 / 收藏 / 导航 / 搜索 | ✅ 只读 | ✅ |
+| AI 生成（`/api/llm`、`/api/vision`） | ❌ 401 | ✅ |
+| 上传 / 修改 / 删除 / 导出 / 模型列表 | ❌ 401 | ✅ |
+| `/api/config` | 精简版，**不含任何 key 字段** | 完整 |
+
+访客点 AI 功能会看到明确提示，侧边栏有「试用版」横幅；站长在自己浏览器登录后功能不受影响。
+**注意：去掉密码意味着笔记对任何知道网址的人可读**；想收回就重启容器并去掉 `TRIAL_MODE=1`。
+
+---
+
+## 6. 命令行工具
+
+都在仓库根目录，**默认只预览**，确认后加 `--apply` 才写入（写入前会自动备份数据库）。
+
+| 工具 | 用途 |
+|---|---|
+| `split_pdf.py` / `拆分PDF.command` | 拆分或压缩超大 PDF（按页数 / 页码范围 / 书签；`--compress` 档位；`--max-mb` 目标体积）。双击 `.command` 是交互式菜单 |
+| `reattribute_slides.py` | **把挂在大纲页上的知识点搬回真正讲它的那一页**（见 [FAQ](#8-常见问题)） |
+| `dedupe_lessons.py` | 删除重复课程（同名 + 同页数 + 同文件名，保留最新） |
+| `dedupe_points.py` | 删除重复知识点（同名或高度相似，保留更完整的那条） |
+
+```bash
+# 例：修正某门课的页码归属（先预览，再落地）
+python reattribute_slides.py data/data.db --title "Lecture 1.2"
+python reattribute_slides.py data/data.db --title "Lecture 1.2" --apply
+```
+
+---
+
+## 7. 数据与备份
+
+一个「站点」的数据只有两样：
+
+```
+data/
+├── config.json   # API key、密码哈希、站点/学科配置、每日上限
+└── data.db       # 全部课程内容 + 进度（SQLite）
+```
+
+- **备份**：复制这两个文件即可（或隐藏菜单导出 JSON）。停服务后再复制最稳妥。
+- **迁移**：把这两个文件放进新机器的 `REVISION_DATA_DIR`。
+- **体积**：`data.db` 绝大部分是幻灯片图片，几百门课可能到几个 GB。
+- **恢复时**：务必先停服务，并删掉同目录残留的 `data.db-wal`、`data.db-shm`。
+
+---
+
+## 8. 常见问题
+
+**Q：某一页幻灯片在课程里看不到 / 「slide 没了」**
+通常指按知识点浏览时看不到它。两个原因：① 该页**没有被任何知识点引用**（整页只有一张图，
+或是封面/目录/文献页）；② 该页内容被 AI 归到了别的页 —— 典型是**大纲页**：目录页列出了整节课
+的主题名，提炼时容易被展开成一堆知识点并全部标成大纲页的页码。
+**数据没丢**，在 **Slides 标签页**始终能看到全部页。要修正归属：
+
+```bash
+python reattribute_slides.py data/data.db --title "你的课程名"          # 预览
+python reattribute_slides.py data/data.db --title "你的课程名" --apply  # 写入
+```
+
+**Q：「按讲义顺序」顺序不对**
+同上，是知识点的**页码归属**错了，不是排序代码错。新版生成流程已从源头防止
+（大纲/目录页不再产出知识点，图注会参与提炼），旧课程用上面的工具修。
+
+**Q：点了「重生成题目」但题目没变**
+旧版本 bug（新旧题库同时存在，读取取到了最旧那份）。当前版本已修：读取取最新题库，
+重生成时替换旧记录。
+
+**Q：一节课要花多少钱？**
+主要花在**输出 token**（知识点/闪卡/题目的正文）。默认已关闭思考模式；
+避免整门课全量重生成，改成只重做需要的某一步，能省很多。
+
+**Q：课件里的图很少或者没有**
+扫描版 PDF 没有可提取的图与文字，需要配视觉 key 开 OCR；纯文字课件本来就没图。
+
+**Q：公式显示不正常**
+公式走 KaTeX 渲染；若公式源文本本身残缺（PDF 提取问题）会退化为原文显示，
+可在知识点里手动修正。
+
+**Q：打不开、很慢**
+首次加载会把整份笔记拉到浏览器，课程很多（几百门）时首次会慢。当前版本已优化：
+列表接口只传必要字段（题目列表 18MB → 50KB）、带 ETag 缓存（二次访问 0 传输）。
+如果还嫌慢：① 分站存放，试用地只放一部分课程；② 升级服务器出网带宽。
+
+**Q：忘记密码**
+见 [3.3](#33-改密码)。
+
+---
+
+## 9. 安全说明
+
+- 除登录页外，**所有 `/api/*` 都需要密码**；试用模式只开放只读接口。
+- API key 存在服务器 `data/config.json`，**从不下发到浏览器**（接口只返回打码后的尾部）。
+- 登录有按 IP 的失败退避（短时间内多次失败会被限流）；改密码会轮换会话密钥，
+  此前发出的登录令牌立即失效。
+- 对外暴露请务必用 **HTTPS**，并设强密码（不要用默认 `mbbs1234`）。
+- `data/` 与 `config.json` 已被 `.gitignore` 排除，别手动提交。
+
+---
+
+## 10. 项目结构
+
+```
+server.py             HTTP 服务：鉴权、静态文件、store API、LLM 代理、PDF 导出
+store.py              SQLite 数据层（任意 store 名 + lessonId 索引）
+pdf_parser.py         PDF 解析（文字 + 图片 + 图形裁剪）
+ppt_parser.py         PPTX 解析
+exporters.py          Anki / PDF 导出
+static/
+├── index.html        外壳（侧边栏、桌宠、KaTeX）
+├── css/style.css
+├── js/
+│   ├── app.js        全部界面逻辑
+│   ├── api.js        后端 API 客户端（token、试用模式）
+│   ├── db.js         数据层（5 秒列表缓存）
+│   ├── sm2.js        间隔重复排程
+│   ├── markdown.js   Markdown + KaTeX 渲染
+│   ├── core/         页面骨架
+│   └── features/     独立功能模块（文件夹、对比、概念测试）
+└── vendor/           KaTeX、html2pdf（离线可用）
+start.sh              本机启动（自动建 venv、装依赖）
+split_pdf.py 等       命令行工具（见第 6 节）
+```
+
+---
+
+## 许可
+
+个人学习项目，未附许可证。自行取用请遵守所用模型服务与课件版权方的条款；
+**不要公开发布你没有权利的教材内容**。

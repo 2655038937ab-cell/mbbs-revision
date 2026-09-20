@@ -98,6 +98,10 @@ export function schedulePoint(point, grade) {
     ...point,
     feynmanStage: grade,
     feynmanLevel: level,
+    // The scheduled gap in whole days. Callers display this directly instead of
+    // deriving it from `feynmanDue - Date.now()`, which carries a millisecond
+    // rounding error and renders as "2.999999988425926d".
+    feynmanInterval: interval,
     feynmanDue: due,
     feynmanLast: now,
     feynmanCount: (point.feynmanCount || 0) + 1,

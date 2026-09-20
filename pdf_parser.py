@@ -61,7 +61,7 @@ def _extract_jpeg(doc, info):
     return pix.tobytes("jpeg", jpg_quality=88)
 
 
-def _figures(doc, page, num):
+def _figures(doc, page, num, fig_dpi=160, fig_quality=84, fig_max_px=1600):
     """Group nearby embedded images into single figures, cropped from the page render."""
     items = []
     seen = set()
@@ -134,18 +134,18 @@ def _figures(doc, page, num):
         data_url = None
         try:
             # Cap the figure's render resolution: large crops are downsampled so
-            # the extracted figure payloads stay small. Use 160 dpi baseline but
-            # never produce an image taller/wider than ~1600 px.
+            # the extracted figure payloads stay small. The baseline dpi and the
+            # pixel ceiling both follow the caller's compression setting.
             w_pt = u.width or 1
             h_pt = u.height or 1
-            scale = min(160 / 72, 1600.0 / max(w_pt, h_pt))
+            scale = min(fig_dpi / 72, float(fig_max_px) / max(w_pt, h_pt))
             crop = page.get_pixmap(
                 matrix=fitz.Matrix(scale, scale), clip=u, colorspace=fitz.csRGB, alpha=False
             )
         except Exception:
             crop = None
         if crop is not None and crop.width >= 60 and crop.height >= 60 and not _is_blank(crop):
-            jpeg = crop.tobytes("jpeg", jpg_quality=84)
+            jpeg = crop.tobytes("jpeg", jpg_quality=fig_quality)
             data_url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
         if data_url is None:
             # Fallback: use the largest embedded image itself (never a black crop).
@@ -193,25 +193,38 @@ def _fix_symbol_font(text):
     return "".join(out)
 
 
-def parse_pdf(data):
-    """Return {'slides': [...], 'count': N}. data = raw PDF bytes."""
+def parse_pdf(data, pages=None, dpi=90, quality=78,
+              fig_dpi=160, fig_quality=84, fig_max_px=1600):
+    """Return {'slides': [...], 'count': N}. data = raw PDF bytes.
+
+    pages        - optional set/list of 1-based page numbers to keep (None = all).
+                   Filtering here avoids rendering pages nobody asked for.
+    dpi, quality - page-render resolution and JPEG quality. The full-page render
+                   dominates the stored payload, so these are the compression knob.
+    fig_dpi, fig_quality, fig_max_px - the same knobs for cropped figures.
+    """
     try:
         doc = fitz.open(stream=data, filetype="pdf")
     except Exception as exc:
         raise ValueError("Could not open PDF: %s" % exc)
 
+    keep = None
+    if pages:
+        keep = {int(p) for p in pages if int(p) > 0}
+
     slides = []
     for i, page in enumerate(doc):
         num = i + 1
+        if keep is not None and num not in keep:
+            continue
         text = _fix_symbol_font((page.get_text("text") or "").strip())
-        # Render the page to a JPEG (display fallback). Keep it readable but
-        # much smaller: 90 dpi + jpg quality 78 (the full-page render is by far
-        # the largest payload, ~116 MB across the library).
-        pix = page.get_pixmap(dpi=90, colorspace=fitz.csRGB, alpha=False)
-        jpeg = pix.tobytes("jpeg", jpg_quality=78)
+        # Render the page to a JPEG (display fallback). Resolution and JPEG
+        # quality come from the caller's compression setting.
+        pix = page.get_pixmap(dpi=dpi, colorspace=fitz.csRGB, alpha=False)
+        jpeg = pix.tobytes("jpeg", jpg_quality=quality)
         page_url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
 
-        images = _figures(doc, page, num)
+        images = _figures(doc, page, num, fig_dpi=fig_dpi, fig_quality=fig_quality, fig_max_px=fig_max_px)
         # Page render goes LAST as a fallback for display.
         images.append({"name": "page%d.jpg" % num, "mime": "image/jpeg", "dataUrl": page_url, "kind": "page"})
 

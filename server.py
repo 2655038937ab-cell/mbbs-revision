@@ -33,15 +33,49 @@ from store import Store
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(ROOT, "static")
-DATA_DIR = os.path.join(ROOT, "data")
+# Data directory: defaults to <checkout>/data. Point REVISION_DATA_DIR at another
+# directory to run a SECOND instance (different subjects, port and password) from
+# the same checkout, each with its own database, keys and login.
+DATA_DIR = os.environ.get("REVISION_DATA_DIR") or os.path.join(ROOT, "data")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 DB_PATH = os.path.join(DATA_DIR, "data.db")
 LEGACY_CONFIG = os.path.join(ROOT, "config.json")
 CLASSIFICATION_PATH = os.path.join(DATA_DIR, "classification.json")
 PORT = int(os.environ.get("PORT", "8756"))
 HOST = os.environ.get("HOST", "0.0.0.0")
-MAX_UPLOAD = 150 * 1024 * 1024  # 150 MB
-MAX_BODY = 200 * 1024 * 1024  # JSON API bodies (store records, etc.)
+
+# Trial mode (TRIAL_MODE=1): the site opens for browsing without a password, so
+# anyone with the URL can read the lessons, cards, quizzes and study settings.
+# Everything that COSTS MONEY or CHANGES DATA stays behind the password —
+# /api/llm and /api/vision bill the owner's own API key, and a public AI endpoint
+# is a public wallet. Reads stay open; writes, exports and model listings do not.
+def _env_flag(name):
+    return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+TRIAL_MODE = _env_flag("TRIAL_MODE")
+# PDF compression presets. The full-page render dominates what gets stored, so
+# DPI + JPEG quality are the real knob; cropped figures keep a little more detail.
+# "high" means high COMPRESSION (smallest payload), not high quality.
+PDF_QUALITY_PRESETS = {
+    "high": {"dpi": 60, "quality": 62, "fig_dpi": 110, "fig_quality": 70, "fig_max_px": 1100},
+    "medium": {"dpi": 90, "quality": 78, "fig_dpi": 160, "fig_quality": 84, "fig_max_px": 1600},
+    "low": {"dpi": 130, "quality": 88, "fig_dpi": 200, "fig_quality": 90, "fig_max_px": 2000},
+}
+
+def _env_mb(name, default_mb):
+    """Read a size limit (in MB) from the environment; fall back to the default."""
+    try:
+        v = float(os.environ.get(name) or 0)
+    except (TypeError, ValueError):
+        v = 0.0
+    return int(v * 1024 * 1024) if v > 0 else default_mb * 1024 * 1024
+
+
+# Uploaded file cap and JSON-body cap. A local instance can raise these (there is
+# no cross-border link to cross) so a whole textbook can be sent in one piece;
+# a hosted instance should keep the defaults.
+MAX_UPLOAD = _env_mb("MAX_UPLOAD_MB", 150)
+MAX_BODY = _env_mb("MAX_BODY_MB", 200)
 TOKEN_TTL = 30 * 24 * 3600  # 30 days
 LOGIN_WINDOW_SEC = 300
 LOGIN_MAX_FAILURES = 10
@@ -58,6 +92,127 @@ DEFAULT_LLM_HEADERS = {
     "X-Title": "MBBS Revision",
 }
 
+# ---------------------------------------------------------------------------
+# Study profiles
+# ---------------------------------------------------------------------------
+# What the site is *for*. The generation prompts are built from this instead of
+# hard-coded medical wording, so one checkout can serve a medicine programme and
+# a science programme at once (each instance picks a preset and may then edit it).
+#
+# Each subject carries:
+#   focus    - the extraction dimensions that replace the old hard-coded medical
+#              list ("anatomy, pathology, clinical features, ..."). This is what
+#              makes the notes specific to the discipline.
+#   keywords - matched (case-insensitively) against a lesson title to bind it to
+#              this subject automatically. The LONGEST match wins, so put a more
+#              specific subject's keywords first when they overlap.
+STUDY_PRESETS = {
+    "mbbs": {
+        "label": "医学 (MBBS)",
+        "site_title": "MBBS Revision",
+        "site_sub": "Active Recall · Spaced Repetition",
+        "learner": "a medical student",
+        "language": "en",
+        "subjects": [
+            {
+                "id": "general",
+                "name": "Medicine",
+                "keywords": [],
+                "focus": "anatomy, physiology, pathology, clinical features and signs, investigations, diagnosis and differential, treatment and management",
+                "quiz": "Favour CLINICAL items: a short vignette with findings, then ask for the most likely diagnosis, the next best investigation, the mechanism behind a sign, or the first-line management. Keep the vignette to facts stated in the key points.",
+                "notes": "Record mechanisms, the distinguishing features of each condition, and the clinical consequence. Keep drug classes, doses and named investigations with the exact wording and numbers the slides give.",
+            },
+        ],
+    },
+    "pku-sciences": {
+        "label": "北大理科课程 (PKU Sciences)",
+        "site_title": "PKU Revision",
+        "site_sub": "北大课程复习 · Active Recall",
+        "learner": "an undergraduate science student at Peking University",
+        "language": "bilingual",
+        "subjects": [
+            {
+                "id": "physiology-lab",
+                "name": "生理学实验",
+                "keywords": ["生理学实验", "生理实验"],
+                "focus": "experimental design and rationale, preparation and recording techniques, measured variables with units and typical values, data analysis and calculations, sources of error and artefacts, physiological interpretation of the traces",
+                "quiz": "Favour EXPERIMENTAL items: given a setup or a recording, ask what it measures, what the expected trace looks like, which variable is held constant, or which conclusion the data actually support. Include error/artefact questions and unit or dimension checks.",
+                "notes": "Record the experimental principle, the preparation and apparatus, the variable measured with its unit and typical range, the expected result, and the main sources of error or artefact.",
+            },
+            {
+                "id": "physiology",
+                "name": "生理学",
+                "keywords": ["生理"],
+                "focus": "organ-system mechanisms, regulation and feedback loops, homeostasis, membrane transport and signalling, quantitative relationships and typical values",
+                "quiz": "Favour MECHANISM and REGULATION items: trace a cause-effect chain, predict the effect of blocking or stimulating a step, or identify the feedback loop and its rate-limiting factor. Include quantitative items wherever the slides give numbers (membrane potentials, flows, clearances, concentrations).",
+                "notes": "For each mechanism, record the chain of steps, what regulates it, and the direction of the effect. Keep typical numerical values with units, and state which compartment or condition they apply to.",
+            },
+            {
+                "id": "quant-mol-bio",
+                "name": "定量分子生物学",
+                "keywords": ["定量分子"],
+                "focus": "quantitative models and the assumptions behind them, rate equations and parameter values, orders of magnitude, measurement methods and their limits, model predictions versus experiment",
+                "quiz": "CALCULATION-heavy: give concrete parameter values and ask for a computed rate, concentration, ratio or timescale; or check whether a stated prediction follows from the model; or ask which assumption a result depends on. Avoid vocabulary-recall and definition questions. For each numeric distractor, make it the result of a SPECIFIC mistake (wrong formula, dropped factor, inverted ratio, unit slip) so the explanation can name the error.",
+                "notes": "For every equation, state what each symbol means, its units, a typical value, and the assumptions the model makes. Give one worked numeric example wherever the slides supply numbers.",
+            },
+            {
+                "id": "biochemistry",
+                "name": "生物化学",
+                "keywords": ["生物化学", "生化"],
+                "focus": "metabolic pathways and their regulation, enzyme kinetics and catalytic mechanisms, structure-function relationships, energetics and cofactors, inhibitors and experimental perturbations",
+                "quiz": "Favour PATHWAY and ENZYME items: order or branch the steps of a pathway, identify its regulated step, predict the effect of an inhibitor or a mutation, name the required cofactor/coenzyme, or compute an energetic or kinetic quantity. Make distractors the results of typical mix-ups (wrong cofactor, wrong direction, wrong compartment, inhibition type confused with another).",
+                "notes": "For each pathway, record the sequence of steps, the enzyme and cofactor at each step, the regulated (rate-limiting) step and its regulators, and the energy or redox balance.",
+            },
+            {
+                "id": "ai-seminar",
+                "name": "AI初级研讨班",
+                "keywords": ["AI", "人工智能", "研讨"],
+                "focus": "core concepts and definitions, methods and model architectures, the problem each approach solves, assumptions and limitations, the central claims and evidence of the assigned readings",
+                "quiz": "CONCEPTUAL only — do not ask for calculations. Favour discrimination items: contrast two methods or architectures, identify the problem a method was designed to solve, spot the unstated assumption, or judge which claim the evidence actually supports.",
+                "notes": "For each method or claim, record the problem it addresses, the core idea, its assumptions, what it does better or worse than the alternatives, and the limitation the reading itself admits.",
+            },
+            {
+                "id": "virology",
+                "name": "病毒学前沿",
+                "keywords": ["病毒"],
+                "focus": "virus structure and classification, replication-cycle steps, host interactions and immune evasion, pathogenesis, antiviral and vaccine targets, current research frontiers",
+                "quiz": "Favour STRUCTURE and REPLICATION-CYCLE items: order the steps of the cycle, match a protein or structure to its function, identify the host factor or immune-evasion mechanism, or name the step an antiviral or vaccine targets.",
+                "notes": "For each virus or mechanism, record the genome type and structure, the replication-cycle steps in order, the host interactions and evasion strategies, and the antiviral or vaccine target.",
+            },
+            {
+                "id": "phys-chem-cmb",
+                "name": "细胞分子生物学中的物理化学",
+                "keywords": ["物理化学"],
+                "focus": "thermodynamics and free energy, binding equilibria and kinetics, molecular forces and energetics, diffusion and transport, quantitative modelling of cellular processes",
+                "quiz": "Favour DERIVATION and CALCULATION items: apply a thermodynamic or kinetic relation to given values, compute a free-energy change, binding fraction or diffusion time, or identify the condition under which an approximation holds. Make each numeric distractor the outcome of a specific error (sign flip, missing RT factor, wrong unit, approximation used outside its range).",
+                "notes": "For each relation, record the formula, the assumptions it requires, the units of every term, and a typical order of magnitude. Show one worked numeric application.",
+            },
+            {
+                "id": "general",
+                "name": "通用",
+                "keywords": [],
+                "focus": "core concepts and definitions, mechanisms, key facts and quantities, and the relationships between them",
+                "quiz": "",
+                "notes": "",
+            },
+        ],
+    },
+}
+
+
+# Fast lookup of the built-in definition for a subject id. A saved config only
+# carries the fields the user edited, so new built-in fields (quiz, notes, ...)
+# are back-filled from here instead of being lost on the next load.
+# Keyed by (preset id, subject id): two presets may reuse an id ("general")
+# with different rules, so a flat map would let one preset's subject leak into
+# the other's config.
+BUILTIN_SUBJECTS = {
+    (_pid, _subj["id"]): _subj
+    for _pid, _preset in STUDY_PRESETS.items()
+    for _subj in _preset["subjects"]
+}
+
+
 DEFAULT_CONFIG = {
     "secret": "",
     "password_hash": "",
@@ -66,17 +221,26 @@ DEFAULT_CONFIG = {
     "new_points_per_day": 15,
     "drive_folder_id": "",
     "drive_proxy": "",
+    "study": {
+        "preset": "mbbs",
+        "site_title": STUDY_PRESETS["mbbs"]["site_title"],
+        "site_sub": STUDY_PRESETS["mbbs"]["site_sub"],
+        "learner": STUDY_PRESETS["mbbs"]["learner"],
+        "language": STUDY_PRESETS["mbbs"]["language"],
+        "auto_subject": True,
+        "subjects": STUDY_PRESETS["mbbs"]["subjects"],
+    },
     "text": {
         "base_url": "https://api.deepseek.com",
-        "model": "deepseek-v4-pro",
+        "model": "deepseek-flash",
         "api_key": "",
     },
     "vision": {
-        "base_url": "https://opencode.ai/zen/go/v1",
-        "model": "deepseek-v4-flash-vision-exp",
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-flash",
         "api_key": "",
     },
-    "vision_active": "opencode",
+    "vision_active": "deepseek",
     "vision_presets": {
         "bailian": {
             "label": "Qwen (阿里百炼)",
@@ -85,9 +249,9 @@ DEFAULT_CONFIG = {
             "api_key": "",
         },
         "deepseek": {
-            "label": "DeepSeek 官方 V4 Vision",
+            "label": "DeepSeek 官方 Flash (原生多模态)",
             "base_url": "https://api.deepseek.com",
-            "model": "deepseek-v4-flash-vision-exp",
+            "model": "deepseek-flash",
             "api_key": "",
         },
         "opencode": {
@@ -170,6 +334,48 @@ MIME = {
 }
 
 
+def parse_page_set(spec):
+    """Parse "1-20, 30, 40-45" into a set of page numbers (None when empty).
+
+    Accepts full-width commas, whitespace and the CJK range words 至/到; a
+    reversed range is normalised. Used to slice a PDF before rendering it, so
+    unwanted pages are never rasterised.
+    """
+    text = str(spec or "").strip()
+    if not text:
+        return None
+    out = set()
+    for part in re.split(r"[,，;；\s]+", text):
+        if not part:
+            continue
+        m = re.match(r"^(\d+)\s*[-–—~至到]\s*(\d+)$", part)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            if a > b:
+                a, b = b, a
+            out.update(range(max(1, a), b + 1))
+        elif part.isdigit():
+            n = int(part)
+            if n >= 1:
+                out.add(n)
+    return out or None
+
+
+def pdf_options_from_headers(headers):
+    """Resolve the optional PDF parse tuning from request headers."""
+    def num(name, default, lo, hi):
+        try:
+            v = int(headers.get(name) or 0)
+        except (TypeError, ValueError):
+            return default
+        return v if lo <= v <= hi else default
+    compress = str(headers.get("X-Pdf-Compress") or "medium").strip().lower()
+    preset = dict(PDF_QUALITY_PRESETS.get(compress, PDF_QUALITY_PRESETS["medium"]))
+    preset["dpi"] = num("X-Parse-Dpi", preset["dpi"], 40, 300)
+    preset["quality"] = num("X-Parse-Quality", preset["quality"], 30, 95)
+    return preset
+
+
 def sha256(s):
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
@@ -237,6 +443,25 @@ def _load_config_uncached():
             merged["new_points_per_day"] = 15
         merged["drive_folder_id"] = cfg.get("drive_folder_id", "") or ""
         merged["drive_proxy"] = cfg.get("drive_proxy", "") or ""
+        # Study profile: keep the built-in shape as the fallback, then layer the
+        # saved section on top. `subjects` replaces the preset wholesale when the
+        # file carries a non-empty list, so an edited subject set survives.
+        saved_study = cfg.get("study") or {}
+        study = {**DEFAULT_CONFIG["study"], **{k: v for k, v in saved_study.items() if k != "subjects"}}
+        if isinstance(saved_study.get("subjects"), list) and saved_study["subjects"]:
+            merged_subjects = []
+            for subj in saved_study["subjects"]:
+                if not (isinstance(subj, dict) and subj.get("id")):
+                    continue
+                # Built-in definition first, saved values on top: a config saved
+                # before a field existed still picks up its new default.
+                builtin = BUILTIN_SUBJECTS.get((study.get("preset") or "", subj["id"]), {})
+                merged_subjects.append({**builtin, **subj})
+            if merged_subjects:
+                study["subjects"] = merged_subjects
+        if not study["subjects"]:
+            study["subjects"] = DEFAULT_CONFIG["study"]["subjects"]
+        merged["study"] = study
     else:
         # Migrate legacy root config.json (API keys) if present
         if os.path.exists(LEGACY_CONFIG):
@@ -362,6 +587,73 @@ def mask_key(key):
     return ("*" * max(0, len(key) - 4)) + key[-4:] if len(key) > 4 else "****"
 
 
+def slim_lesson(rec):
+    """Drop the fields that only the per-lesson views read.
+
+    Measured on the real 258-lesson library, these are 39% of the list payload:
+    figure captions (3.7 MB), figure crop geometry (3.4 MB), point key terms
+    (1.4 MB), supplements and the topic outline. Every one of them is rendered only
+    inside a lesson — and opening a lesson fetches /api/store/lessons/<id>, which is
+    untouched — so the list can shed them.
+
+    Deliberately KEPT, because list-level views read them: point explanations and
+    slide text (full-text search), mnemonic and tags (search), point titles and
+    categories (knowledge tree, mastery), and each image's kind/name (the page image
+    is found by kind === 'page').
+    """
+    if not isinstance(rec, dict):
+        return rec
+    out = dict(rec)
+    out.pop("outline", None)
+    slides = []
+    for s in rec.get("slides") or []:
+        if not isinstance(s, dict):
+            slides.append(s)
+            continue
+        s2 = dict(s)
+        s2.pop("notes", None)
+        imgs = []
+        for im in s.get("images") or []:
+            if not isinstance(im, dict):
+                imgs.append(im)
+                continue
+            # Crop geometry and captions belong to the points/slides tabs.
+            imgs.append({k: v for k, v in im.items() if k not in ("caption", "x", "y", "w", "h")})
+        s2["images"] = imgs
+        slides.append(s2)
+    out["slides"] = slides
+    points = []
+    for p in rec.get("points") or []:
+        if not isinstance(p, dict):
+            points.append(p)
+            continue
+        points.append({k: v for k, v in p.items() if k not in ("keyTerms", "supplement")})
+    out["points"] = points
+    return out
+
+
+def slim_quiz(rec):
+    """Reduce a quiz record to what list-level views ask of it.
+
+    The dashboard, the lessons list, the knowledge tree and the progress page all
+    only rank quizzes by score and count their questions, yet every question — stem,
+    four options and an explanation — travelled with every page load: 18.6 MB of the
+    258-lesson library. The question bank itself is fetched per lesson by the Quiz
+    tab, and the backup export uses ?full=1, so both keep the real thing.
+    """
+    if not isinstance(rec, dict):
+        return rec
+    return {
+        "id": rec.get("id"),
+        "lessonId": rec.get("lessonId"),
+        "createdAt": rec.get("createdAt"),
+        "score": rec.get("score"),
+        "completed": rec.get("completed"),
+        "lastTaken": rec.get("lastTaken"),
+        "questionCount": len(rec.get("questions") or []),
+    }
+
+
 def lighten_lesson(rec):
     """Return a lesson record without base64 image payloads.
 
@@ -371,11 +663,25 @@ def lighten_lesson(rec):
     """
     if not isinstance(rec, dict) or rec.get("kind") not in ("pdf", "pptx"):
         return rec
+    # After the image offload the records carry no base64 payloads, so the
+    # (expensive) deepcopy below would be pure waste on a 3.6 MB lesson list.
+    # Only deepcopy when we actually need to null out an image dataUrl.
+    if not any(
+        (im.get("dataUrl") for s in rec.get("slides") or [] for im in s.get("images") or [] if isinstance(im, dict))
+    ) and not any(
+        (f.get("dataUrl") for p in rec.get("points") or [] for f in (p or {}).get("figures") or [] if isinstance(f, dict))
+    ):
+        return rec
     out = copy.deepcopy(rec)
     for slide in out.get("slides") or []:
         for img in slide.get("images") or []:
             if isinstance(img, dict):
                 img["dataUrl"] = None
+    # Manually inserted point figures must not ride along on list responses either.
+    for p in out.get("points") or []:
+        for fig in (p or {}).get("figures") or []:
+            if isinstance(fig, dict):
+                fig["dataUrl"] = None
     return out
 
 
@@ -457,10 +763,14 @@ def merge_lesson_images(existing, incoming):
 
 
 def _has_image_payload(lesson):
-    """True if any slide image in the lesson carries a base64 dataUrl."""
+    """True if any slide image OR manually inserted point figure carries a dataUrl."""
     for slide in (lesson or {}).get("slides") or []:
         for im in slide.get("images") or []:
             if isinstance(im, dict) and im.get("dataUrl"):
+                return True
+    for p in (lesson or {}).get("points") or []:
+        for fig in (p or {}).get("figures") or []:
+            if isinstance(fig, dict) and fig.get("dataUrl"):
                 return True
     return False
 
@@ -472,17 +782,28 @@ def _strip_lesson_images(lesson):
     Called when a lesson is saved/imported ALREADY carrying image payloads
     (a full lesson from parsing or a full edit). Keeps the 'lessons' store
     light so listing it no longer reads megabytes of base64.
+
+    Covers both the auto-extracted slide images and the figures a user inserts by
+    hand onto a knowledge point. Point figures are keyed by their own id (not by
+    index), so editing points later cannot mis-associate a stored payload.
     """
     if not _has_image_payload(lesson):
         return lesson  # already-light update; leave lessonsImages untouched
     lid = lesson.get("id") or ""
-    img_record = {"id": lid, "lessonId": lid, "slides": []}
-    for slide in lesson.get("slides") or []:
+    prev = get_store().get("lessonImages", lid)
+    prev = prev if isinstance(prev, dict) else {}
+    img_record = {"id": lid, "lessonId": lid, "slides": [], "pointFigures": dict(prev.get("pointFigures") or {})}
+    prev_slides = prev.get("slides") or []
+    for i, slide in enumerate(lesson.get("slides") or []):
         saved = []
-        for im in slide.get("images") or []:
+        prev_imgs = (prev_slides[i].get("images") if i < len(prev_slides) and isinstance(prev_slides[i], dict) else None) or []
+        for j, im in enumerate(slide.get("images") or []):
             if isinstance(im, dict):
+                # Keep an already-stored payload when this update arrived without one,
+                # so a partial edit can never wipe the images saved earlier.
+                keep = im.get("dataUrl") or (prev_imgs[j].get("dataUrl") if j < len(prev_imgs) and isinstance(prev_imgs[j], dict) else None)
                 saved.append({
-                    "dataUrl": im.get("dataUrl"),
+                    "dataUrl": keep,
                     "name": im.get("name"),
                     "mime": im.get("mime"),
                     "kind": im.get("kind"),
@@ -491,6 +812,19 @@ def _strip_lesson_images(lesson):
             else:
                 saved.append({"dataUrl": None})
         img_record["slides"].append({"images": saved})
+    for p in lesson.get("points") or []:
+        for fig in (p or {}).get("figures") or []:
+            if not isinstance(fig, dict):
+                continue
+            fid = fig.get("id")
+            if fig.get("dataUrl"):
+                if fid:
+                    img_record["pointFigures"][fid] = fig["dataUrl"]
+                    fig["dataUrl"] = None
+            elif fid and img_record["pointFigures"].get(fid):
+                fig["dataUrl"] = None   # payload already offloaded; leave the store alone
+    if not img_record["pointFigures"]:
+        img_record.pop("pointFigures", None)
     get_store().put("lessonImages", img_record)
     return lesson
 
@@ -517,7 +851,41 @@ def _attach_lesson_images(lesson):
                 src = saved[j].get("dataUrl")
                 if src:
                     im["dataUrl"] = src
+    # Manually inserted point figures, matched by their own id.
+    figs = img.get("pointFigures") or {}
+    if figs:
+        for p in lesson.get("points") or []:
+            for fig in (p or {}).get("figures") or []:
+                if isinstance(fig, dict) and not fig.get("dataUrl"):
+                    src = figs.get(fig.get("id"))
+                    if src:
+                        fig["dataUrl"] = src
     return lesson
+
+
+def _keep_stored_questions(existing, incoming):
+    """Never let a stale tab replace an existing quiz's questions.
+
+    The app writes questions to the store ONLY when it creates a new quiz record
+    (generation, or "重新生成题目" — which makes a fresh record and deletes the old
+    one). Every other write to an existing quiz is progress: userAnswers, score,
+    attempts, lastTaken. So when the stored bank and the incoming one differ, the
+    stored one is the authored/repaired copy and the incoming one is a tab that was
+    open before a repair. Without this, a tab mid-attempt writes its stale bank back
+    on the next answer — which is how a repaired question kept reappearing.
+
+    Progress fields still come from the client; only the questions are held.
+    """
+    if not isinstance(existing, dict) or not isinstance(incoming, dict):
+        return incoming
+    stored = existing.get("questions")
+    if not isinstance(stored, list) or not stored:
+        return incoming
+    if incoming.get("questions") == stored:
+        return incoming
+    out = dict(incoming)
+    out["questions"] = stored
+    return out
 
 
 def make_token(secret, ttl=TOKEN_TTL):
@@ -540,7 +908,7 @@ def verify_token(secret, token):
         return False
 
 
-def call_llm(cfg, messages, max_tokens=4000, temperature=0.2, json_mode=False, reasoning_effort=None):
+def call_llm(cfg, messages, max_tokens=4000, temperature=0.2, json_mode=False, reasoning_effort=None, thinking=None):
     if not cfg.get("api_key"):
         return {"error": "API key is not set. Add it in Settings."}
     url = cfg["base_url"].rstrip("/") + "/chat/completions"
@@ -551,7 +919,19 @@ def call_llm(cfg, messages, max_tokens=4000, temperature=0.2, json_mode=False, r
         "max_tokens": max_tokens,
         "stream": False,
     }
-    if reasoning_effort:
+    # Default: disable the hidden "thinking"/reasoning pass on DeepSeek's
+    # official API. Reasoning tokens are billed at full output price and can be
+    # 40-90% of every completion, so turning thinking off roughly halves the
+    # cost per generated lesson with no measurable quality loss on extraction /
+    # flashcard / MCQ tasks. Other providers (opencode proxy, Bailian/Qwen)
+    # don't speak the `thinking` field, so leave them untouched. Callers can
+    # still opt back in via thinking="enabled".
+    if thinking is None:
+        if "api.deepseek.com" in (cfg.get("base_url") or "").lower():
+            thinking = "disabled"
+    if thinking in ("enabled", "disabled"):
+        payload["thinking"] = {"type": thinking}
+    if reasoning_effort and thinking != "disabled":
         payload["reasoning_effort"] = reasoning_effort
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
@@ -598,6 +978,49 @@ def get_store():
     if _STORE is None:
         _STORE = Store(DB_PATH)
     return _STORE
+
+
+# ---- In-memory response cache for list/detail store reads ----
+# The dashboard + lessons list fire several big reads on every page load.
+# Caching the computed dict by (store, params) means the expensive DB read +
+# (for lessons) lighten/attach processing only happens once per TTL window.
+# Invalidated on any write to that store. Stale-safe: TTL is short.
+_CACHE_TTL = 6  # seconds
+# (The list-response cache now lives in _ENCODED_CACHE, keyed the same way.)
+# Second level: the encoded (gzipped) body plus its ETag, so a repeated or
+# concurrent request for the same list costs no json.dumps and no gzip. Those two
+# are CPU-bound and hold the GIL, which is what made unrelated asset requests wait
+# seconds behind a 26 MB store response on a 2-core instance.
+_ENCODED_CACHE = {}
+_STORE_CACHE_LOCK = threading.Lock()
+
+
+def _cache_key(store, params):
+    return store + "|" + "|".join(str(params[k] if params.get(k) is not None else "") for k in ("lessonId", "full", "light"))
+
+
+def _encoded_cache_get(store, params):
+    with _STORE_CACHE_LOCK:
+        v = _ENCODED_CACHE.get(_cache_key(store, params))
+        if v and v[0] > time.time():
+            return v[1], v[2], v[3]
+        if v:
+            _ENCODED_CACHE.pop(_cache_key(store, params), None)
+        return None, None, None
+
+
+def _encoded_cache_set(store, params, etag, body, is_gzip):
+    with _STORE_CACHE_LOCK:
+        _ENCODED_CACHE[_cache_key(store, params)] = (time.time() + _CACHE_TTL, etag, body, is_gzip)
+
+
+def _cache_invalidate(store):
+    """Drop every cached list body for a store. Called on any write to it, so a
+    client that just saved something never gets served the previous body."""
+    with _STORE_CACHE_LOCK:
+        prefix = store + "|"
+        for k in [k for k in _ENCODED_CACHE if k.startswith(prefix)]:
+            _ENCODED_CACHE.pop(k, None)
 
 
 def _uid():
@@ -655,6 +1078,55 @@ class Handler(BaseHTTPRequestHandler):
     def _gzip_ok(self):
         return "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
 
+    def _send_store_bytes(self, etag, body, is_gzip):
+        """Send one cached store body, or a 304 when the client already has it."""
+        cache_headers = "private, max-age=0, must-revalidate"
+        inm = self.headers.get("If-None-Match") or ""
+        if etag and etag in [t.strip() for t in inm.split(",")]:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", cache_headers)
+            self.end_headers()
+            return
+        use_gzip = self._gzip_ok() and is_gzip
+        if not use_gzip and is_gzip:
+            body = gzip.decompress(body)  # client cannot take gzip; rare
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", cache_headers)
+        self.send_header("ETag", etag)
+        if use_gzip:
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_store_json(self, store, params, obj):
+        """Encode a whole-store list once, cache the bytes, then send them.
+
+        Two costs dominate a page load here, and neither is the SQL query: shipping
+        the JSON (megabytes — the 258-lesson library is 24 MB, 5.5 MB gzipped), and
+        rebuilding it on every request (json.dumps plus gzip are CPU-bound and hold
+        the GIL, which is what stalled unrelated asset requests for seconds behind a
+        big store response on a 2-core box).
+
+        The ETag turns a second visit into a 304 with no body at all — this data
+        changes only when the owner edits it, and any write invalidates the cache.
+        The encoded-body cache means only the first caller after an edit pays for
+        the encoding.
+        """
+        raw = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        etag = '"%d-%s"' % (len(raw), hashlib.sha256(raw).hexdigest()[:24])
+        if len(raw) > 512:
+            body, is_gzip = gzip.compress(raw), True
+        else:
+            body, is_gzip = raw, False
+        _encoded_cache_set(store, params, etag, body, is_gzip)
+        self._send_store_bytes(etag, body, is_gzip)
+
     def _send_json(self, obj, status=200):
         # If _read_body already rejected an oversized body, don't write a
         # second response to the same connection.
@@ -693,16 +1165,30 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return None
 
-    def _authed(self):
+    def _token_ok(self):
+        """Whether the request carries a valid session token. Sends nothing."""
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
-            self._send_json({"error": "unauthorized"}, 401)
             return False
-        cfg = load_config()
-        if not verify_token(cfg["secret"], auth[7:]):
-            self._send_json({"error": "unauthorized"}, 401)
-            return False
-        return True
+        return verify_token(load_config()["secret"], auth[7:])
+
+    def _authed(self):
+        """Require a valid token, answering 401 otherwise. Costs money / changes data."""
+        if self._token_ok():
+            return True
+        self._send_json({"error": "unauthorized"}, 401)
+        return False
+
+    def _read_ok(self):
+        """Require a valid token — except in trial mode, where reading is public."""
+        if TRIAL_MODE:
+            return True
+        return self._authed()
+
+    def _authed_header_ok(self):
+        """Token check without the 401, for endpoints that answer differently when
+        the owner is signed in (e.g. /api/config in trial mode)."""
+        return self._token_ok()
 
     def _serve_static(self, path):
         if path in ("/", ""):
@@ -737,24 +1223,50 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(urlparse(self.path).query)
 
         if path == "/api/health":
-            self._send_json({"ok": True, "pdf_support": True})
+            self._send_json({"ok": True, "pdf_support": True, "max_upload_mb": MAX_UPLOAD // 1048576})
             return
 
         if path == "/api/auth/me":
+            # In trial mode anyone counts as signed in — this response is what stops
+            # the client from showing a login screen. Writes and AI calls stay behind
+            # the real password (see _read_ok / _authed). Checked in this order so a
+            # failed token never emits a 401 that the trial answer would then follow
+            # with a second response on the same connection.
+            if TRIAL_MODE:
+                self._send_json({"ok": True, "trial": True, "owner": self._token_ok()})
+                return
             if self._authed():
-                self._send_json({"ok": True})
+                self._send_json({"ok": True, "trial": False})
             return
 
         if path == "/api/classification":
-            if not self._authed():
+            if not self._read_ok():
                 return
             self._send_json(load_classification())
             return
 
         if path == "/api/config":
-            if not self._authed():
+            if not self._read_ok():
                 return
             cfg = load_config()
+            if TRIAL_MODE and not self._authed_header_ok():
+                # Trial visitors get what the interface needs to render (branding,
+                # subjects, daily goals) and nothing about the owner's keys: not the
+                # values, not the endpoints, not whether a slot is configured.
+                study = cfg.get("study") or DEFAULT_CONFIG["study"]
+                self._send_json({
+                    "trial": True,
+                    "goal_minutes": cfg.get("goal_minutes", 30),
+                    "new_cards_per_day": cfg.get("new_cards_per_day", 20),
+                    "new_points_per_day": cfg.get("new_points_per_day", 15),
+                    "study": study,
+                    "study_presets": {pid: {"label": p["label"]} for pid, p in STUDY_PRESETS.items()},
+                    "has_text_key": False,
+                    "has_vision_key": False,
+                    "has_drive_service": False,
+                    "vision_active_has_key": False,
+                })
+                return
             text_key = (cfg.get("text") or {}).get("api_key") or ""
             presets = {}
             for pid, p in (cfg.get("vision_presets") or {}).items():
@@ -774,10 +1286,16 @@ class Handler(BaseHTTPRequestHandler):
                     "new_points_per_day": cfg.get("new_points_per_day", 15),
                     "drive_folder_id": cfg.get("drive_folder_id", "") or "",
                     "drive_proxy": cfg.get("drive_proxy", "") or "",
+                    "study": cfg.get("study") or DEFAULT_CONFIG["study"],
+                    "study_presets": {pid: {"label": p["label"]} for pid, p in STUDY_PRESETS.items()},
                     "has_drive_service": os.path.exists(os.path.join(DATA_DIR, "google-service-account.json")),
                     "has_text_key": bool(cfg["text"]["api_key"]),
                     "has_vision_key": bool((cfg["vision"] or {}).get("api_key")),
                     "vision_active_has_key": bool(active_cfg.get("api_key")),
+                    # Trial mode is reported even to the owner: the client uses it to
+                    # show the read-only banner and to explain why AI is refused.
+                    "trial": TRIAL_MODE,
+                    "trial_owner": TRIAL_MODE and self._token_ok(),
                 }
             )
             return
@@ -802,17 +1320,41 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path.startswith("/api/store/"):
-            if not self._authed():
+            # Reads are the one thing trial mode opens: lessons, cards, quizzes,
+            # mistakes, study logs, together with /api/classification above. The
+            # POST / PUT / DELETE handlers for this same prefix stay strict.
+            if not self._read_ok():
                 return
             parts = [unquote(p) for p in path[len("/api/store/"):].split("/") if p]
             store = get_store()
             if len(parts) == 1:
                 lesson_id = query.get("lessonId", [None])[0]
                 full = query.get("full", ["0"])[0] == "1"
+                params = {"lessonId": lesson_id, "full": "1" if full else "0", "light": "0"}
+                # The encoded body IS the cache for a list: it already carries the
+                # ETag, and serving it directly skips the query, the slim pass, the
+                # json.dumps and the gzip. (An earlier object-level cache answered
+                # here without an ETag, which silently cost every repeat visit the
+                # 304 it should have received.)
+                etag, body, is_gzip = _encoded_cache_get(parts[0], params)
+                if etag is not None:
+                    self._send_store_bytes(etag, body, is_gzip)
+                    return
                 items = store.all(parts[0], lesson_id=lesson_id)
                 if parts[0] == "lessons" and not full:
                     items = [lighten_lesson(rec) for rec in items]
-                self._send_json({"items": items})
+                # A whole-store list goes to the browser on every page load, and on a
+                # small instance that transfer — not the query — is what makes the app
+                # feel broken: 258 lessons of notes are 23 MB of JSON, 6 MB gzipped.
+                # The fields dropped here are read only by the per-lesson views, which
+                # fetch their own copy through /api/store/lessons/<id>. ?full=1 (the
+                # backup export) and ?lessonId= (the lesson detail) keep everything.
+                if lesson_id is None and not full:
+                    if parts[0] == "lessons":
+                        items = [slim_lesson(rec) for rec in items]
+                    elif parts[0] == "quizzes":
+                        items = [slim_quiz(rec) for rec in items]
+                self._send_store_json(parts[0], params, {"items": items})
             elif len(parts) == 2:
                 rec = store.get(parts[0], parts[1])
                 if rec is None:
@@ -847,6 +1389,9 @@ class Handler(BaseHTTPRequestHandler):
                 ext = "pdf"
                 disposition = "inline"
             elif export_type == "apkg":
+                # Re-attach image payloads so the Anki deck can embed the
+                # relevant figure on each flashcard.
+                lesson = _attach_lesson_images(lesson)
                 data = exporters.build_apkg(lesson, cards)
                 if data is None:
                     self._send_json({"error": "No flashcards to export."}, 400)
@@ -1001,8 +1546,50 @@ class Handler(BaseHTTPRequestHandler):
                 cfg["drive_folder_id"] = (body.get("drive_folder_id") or "").strip()
             if body.get("drive_proxy") is not None:
                 cfg["drive_proxy"] = (body.get("drive_proxy") or "").strip()
+            # Study profile: a preset id swaps in that whole profile; individual
+            # string fields override on top; `subjects` replaces the list.
+            if body.get("study_preset"):
+                preset = STUDY_PRESETS.get(str(body["study_preset"]))
+                if preset:
+                    cfg["study"] = {
+                        "preset": str(body["study_preset"]),
+                        "site_title": preset["site_title"],
+                        "site_sub": preset["site_sub"],
+                        "learner": preset["learner"],
+                        "language": preset["language"],
+                        "auto_subject": cfg.get("study", {}).get("auto_subject", True),
+                        "subjects": json.loads(json.dumps(preset["subjects"])),
+                    }
+            incoming_study = body.get("study")
+            if isinstance(incoming_study, dict):
+                study = cfg.setdefault("study", json.loads(json.dumps(DEFAULT_CONFIG["study"])))
+                for key in ("site_title", "site_sub", "learner", "language"):
+                    if incoming_study.get(key) is not None:
+                        study[key] = str(incoming_study[key]).strip()
+                if incoming_study.get("language") not in (None, "", "en", "zh", "bilingual"):
+                    study["language"] = "en"
+                if incoming_study.get("auto_subject") is not None:
+                    study["auto_subject"] = bool(incoming_study["auto_subject"])
+                subs = incoming_study.get("subjects")
+                if isinstance(subs, list) and subs:
+                    clean = []
+                    for s in subs:
+                        if not isinstance(s, dict) or not s.get("id"):
+                            continue
+                        clean.append({
+                            "id": str(s["id"]).strip(),
+                            "name": str(s.get("name") or s["id"]).strip(),
+                            "keywords": [str(k) for k in (s.get("keywords") or []) if str(k).strip()],
+                            "focus": str(s.get("focus") or "").strip(),
+                            # Subject-specific generation rules: how to write the
+                            # notes, and how to shape the questions.
+                            "quiz": str(s.get("quiz") or "").strip(),
+                            "notes": str(s.get("notes") or "").strip(),
+                        })
+                    if clean:
+                        study["subjects"] = clean
             save_config(cfg)
-            self._send_json({"ok": True, "has_text_key": bool(cfg["text"]["api_key"]), "has_vision_key": bool(cfg["vision"]["api_key"]), "goal_minutes": cfg.get("goal_minutes", 30), "new_cards_per_day": cfg.get("new_cards_per_day", 20), "new_points_per_day": cfg.get("new_points_per_day", 15), "drive_folder_id": cfg.get("drive_folder_id", "") or "", "drive_proxy": cfg.get("drive_proxy", "") or ""})
+            self._send_json({"ok": True, "has_text_key": bool(cfg["text"]["api_key"]), "has_vision_key": bool(cfg["vision"]["api_key"]), "goal_minutes": cfg.get("goal_minutes", 30), "new_cards_per_day": cfg.get("new_cards_per_day", 20), "new_points_per_day": cfg.get("new_points_per_day", 15), "drive_folder_id": cfg.get("drive_folder_id", "") or "", "drive_proxy": cfg.get("drive_proxy", "") or "", "study": cfg.get("study") or DEFAULT_CONFIG["study"]})
             return
 
         if path == "/api/parse":
@@ -1015,12 +1602,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Empty file"}, 400)
                 return
             if len(raw) > MAX_UPLOAD:
-                self._send_json({"error": "File too large (max 150 MB)"}, 413)
+                self._send_json({"error": "File too large (max %d MB). 超大文件请先用 split_pdf.py 拆分再上传。" % (MAX_UPLOAD // 1048576)}, 413)
                 return
             filename = self.headers.get("X-Filename", "file")
+            # Optional PDF tuning: page slice + compression preset (ignored for
+            # pptx, whose images are already-compressed embedded assets).
+            pdf_opts = pdf_options_from_headers(self.headers)
+            pdf_opts["pages"] = parse_page_set(self.headers.get("X-Page-Range"))
             try:
                 if raw[:5] == b"%PDF-":
-                    result = pdf_parser.parse_pdf(raw)
+                    result = pdf_parser.parse_pdf(raw, **pdf_opts)
                     kind = "pdf"
                 elif raw[:4] == b"PK\x03\x04":
                     result = ppt_parser.parse_pptx(raw)
@@ -1059,6 +1650,10 @@ class Handler(BaseHTTPRequestHandler):
                 cfg["model"] = requested_model
             # glm on this gateway doesn't accept reasoning_effort / response_format
             # (they make it return empty content), so send plain text JSON instead.
+            # thinking: callers may opt back into the model's reasoning pass for
+            # the few steps that genuinely benefit (e.g. building the lecture's
+            # topic outline). Unset -> call_llm's cost-saving default.
+            thinking = body.get("thinking")
             result = call_llm(
                 cfg,
                 messages,
@@ -1066,6 +1661,7 @@ class Handler(BaseHTTPRequestHandler):
                 temperature=float(body.get("temperature", 0.2)),
                 json_mode=bool(body.get("json_mode", False)) and not is_glm,
                 reasoning_effort=(None if is_glm else (body.get("reasoning_effort") or "low")),
+                thinking=(thinking if thinking in ("enabled", "disabled") else None),
             )
             if not result.get("error"):
                 record_token_use(body.get("slot"), body.get("lessonId"), body.get("lessonTitle"), cfg.get("model"), result.get("usage"))
@@ -1104,7 +1700,7 @@ class Handler(BaseHTTPRequestHandler):
                 re = "low"
             result = call_llm(
                 vcfg, messages,
-                max_tokens=int(body.get("max_tokens", 800)),
+                max_tokens=int(body.get("max_tokens", 3000)),
                 temperature=0.2,
                 reasoning_effort=re,
             )
@@ -1188,6 +1784,8 @@ class Handler(BaseHTTPRequestHandler):
                 lesson["id"] = lid
                 lesson = _strip_lesson_images(lesson)
                 st.put("lessons", lesson)
+                _cache_invalidate("lessons")
+                _cache_invalidate("cards")
                 for card in (body.get("cards") or []):
                     if card.get("lessonId") not in (orig_id, lid):
                         continue
@@ -1198,7 +1796,10 @@ class Handler(BaseHTTPRequestHandler):
                     if quiz.get("lessonId") not in (orig_id, lid):
                         continue
                     quiz["lessonId"] = lid
-                    quiz.setdefault("id", _uid())
+                    # Always a fresh id: the lessons were just re-keyed above, and
+                    # reusing an existing quiz id would now collide with the
+                    # stored-questions rule in _keep_stored_questions.
+                    quiz["id"] = _uid()
                     st.put("quizzes", quiz)
                 imported.append(lid)
             self._send_json({"ok": True, "imported": len(imported)})
@@ -1210,6 +1811,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 2 and parts[1] == "bulk":
                 body = self._json_body() or {}
                 get_store().bulk_put(parts[0], body.get("items", []))
+                _cache_invalidate(parts[0])
                 self._send_json({"ok": True})
                 return
             self._send_json({"error": "bad request"}, 400)
@@ -1234,7 +1836,14 @@ class Handler(BaseHTTPRequestHandler):
                     # list reads stay light; a light (grading) update leaves
                     # existing images untouched.
                     body = _strip_lesson_images(body)
+                elif parts[0] == "quizzes":
+                    # A tab holds the question bank in memory for the whole
+                    # attempt and writes the record back after every answer, so a
+                    # tab opened before a server-side repair would restore the
+                    # questions we just fixed. See _keep_stored_questions.
+                    body = _keep_stored_questions(get_store().get("quizzes", body.get("id")), body)
                 get_store().put(parts[0], body)
+                _cache_invalidate(parts[0])
                 self._send_json({"ok": True})
                 return
             self._send_json({"error": "bad request"}, 400)
@@ -1251,9 +1860,11 @@ class Handler(BaseHTTPRequestHandler):
             store = get_store()
             if len(parts) == 1:
                 store.clear(parts[0])
+                _cache_invalidate(parts[0])
                 self._send_json({"ok": True})
             elif len(parts) == 2:
                 store.delete(parts[0], parts[1])
+                _cache_invalidate(parts[0])
                 self._send_json({"ok": True})
             else:
                 self._send_json({"error": "bad request"}, 400)

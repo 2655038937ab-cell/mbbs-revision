@@ -1,43 +1,55 @@
-# Python
+# ---------- Python ----------
 .venv/
+.venv-py39/
 __pycache__/
 *.pyc
 *.log
 
-# Secrets & data — never commit these
+# ---------- Secrets & data: never commit ----------
 config.json
+config.json.bak-*
 data/
+data-pku/
+*.db
+*.db-wal
+*.db-shm
+*.db.bak-*
+google-service-account.json
 
-# Misc
+# ---------- OS / editor ----------
 .DS_Store
 node_modules/
 
-# Local / dev-only helpers (do not deploy)
+# ---------- Machine-specific helpers ----------
+# LaunchAgent/startup files carry the absolute paths of the machine that produced
+# them, so they are neither useful nor safe to publish.
+macos-autostart.plist
+macos-autostart.plist.patched
 .macos-autostart.plist
 .macos-autostart.plist.patched
-macos-autostart.plist
 setup-autostart.sh
-test_glm*.py
-test_qwen.py
-recompress_lessons.py
-smoke_test.js
+
+# ---------- One-off / dev-only ----------
 test_*.py
 test_*.js
-recompress_lessons.py
-exporters.py
 smoke_test.js
-setup-autostart.sh
-macos-autostart.plist
-GOOGLE_DRIVE_SETUP.md
+check_modules.mjs
+check_rendering.mjs
+recompress_lessons.py
+*deploy.zip
+*.bak
+*.bak-*
+
+# One-off data repairs written against a specific private library.
+# `exporters.py` is NOT one of these — it is imported by server.py and is required.
+quiz_audit.py
+quiz_apply_repairs.py
+quiz_fix_slides.py
+repair_quiz_questions.py
+
+# ---------- Private material ----------
+reviews/
+textbook_parts/
 deepseek harness/
 测试/
-test_*.py
-test_*.js
-recompress_lessons.py
-exporters.py
-smoke_test.js
-setup-autostart.sh
-macos-autostart.plist
 GOOGLE_DRIVE_SETUP.md
-deepseek harness/
-测试/

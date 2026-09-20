@@ -70,6 +70,10 @@ body {
 .badge-red { background: var(--red); }
 .sidebar-footer { margin-top: auto; padding: 12px 8px 0; }
 .ai-status { font-size: 12px; color: #64748b; padding: 9px 11px; background: rgba(255,255,255,.04); border-radius: 9px; }
+/* Trial-mode notice: browsing is open, AI is not. */
+.trial-banner { margin-top: 12px; padding: 10px 12px; border-radius: 10px; font-size: 12px; line-height: 1.5;
+  color: var(--amber); background: var(--amber-soft); border: 1px solid rgba(217, 119, 6, .35); }
+.trial-banner span { color: var(--text-2); }
 
 /* ---------- Main ---------- */
 #main { flex: 1; margin-left: var(--sidebar-w); min-height: 100vh; }
@@ -166,6 +170,65 @@ a { color: var(--accent); }
 .kp-fig img { max-width: 100%; display: block; }
 .kp-fig .fig-cap { padding: 9px 13px; font-size: 13px; color: var(--text-2); background: var(--surface-2); }
 
+/* ---------- Math formulas (KaTeX) ---------- */
+/* The AI writes formulas as LaTeX; KaTeX renders them. Sizing is tuned so
+   formulas sit on the same baseline as the surrounding text instead of
+   towering over it, and long display formulas scroll instead of overflowing. */
+.katex { font-size: 1.03em; }
+.katex-display {
+  margin: 10px 0;
+  padding: 2px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+}
+.katex-display > .katex { white-space: normal; }
+/* A formula KaTeX could not parse is echoed in red rather than dropped. */
+.katex .katex-error { color: var(--red); font-size: .92em; }
+/* Point titles / flashcard fronts can carry inline math too. */
+.kp-title .katex, .card-front .katex, .q-option .katex { font-size: 1em; }
+@media (max-width: 700px) {
+  .katex { font-size: .97em; }
+  .katex-display { font-size: .9em; margin: 8px 0; }
+}
+
+/* ---------- Printing ----------
+   A revision site gets printed: formula sheets and knowledge-point lists go on
+   paper. Without these rules the sidebar, nav buttons and search boxes print
+   too, cards split across pages, and every <details> answer stays collapsed.
+   Print expands answers on purpose — a formula sheet with the solutions hidden
+   is not worth carrying. */
+@media print {
+  #sidebar, .sidebar-footer, #toast-wrap, .page-head .btn, .progress-panel,
+  #formula-search, #formula-search-note, #formula-group-toggle,
+  .nav-item, .modal-backdrop { display: none !important; }
+  /* A subject folded away on screen must still print: the point of the sheet is to
+     carry every formula. The fold controls and the "stale format" warnings are
+     screen-only furniture. */
+  .formula-body { display: block !important; }
+  [data-fold], #formula-fold-all, #formula-unfold-all, [data-fold-warn] { display: none !important; }
+  #app { display: block; }
+  #main { margin: 0; padding: 0; }
+  body { background: #fff; color: #000; }
+  .card, .formula-card, .card-body {
+    background: #fff !important; border: 1px solid #bbb !important;
+    box-shadow: none !important; break-inside: avoid; page-break-inside: avoid;
+  }
+  /* Show every collapsed answer: details collapses via the browser default, so
+     the summary must stop acting as a toggle and the content must be shown. */
+  details { display: block !important; }
+  details > summary { display: none !important; }
+  details > *:not(summary) { display: block !important; }
+  /* Chapter headers stay (they are what makes the printed sheet navigable), but
+     the sticky positioning and the disclosure arrow do not. */
+  .formula-chapter { border-left: none; padding-left: 0; break-inside: auto; }
+  .formula-chapter > summary { position: static; display: flex !important; }
+  .formula-chapter > summary::before { content: "" !important; }
+  .katex-display { overflow: visible; }
+  .sub { color: #333 !important; }
+  a[href]::after { content: ""; }
+}
+
 /* ---------- Flashcards ---------- */
 .flashcard-wrap { max-width: 640px; margin: 0 auto; }
 .flashcard {
@@ -192,6 +255,18 @@ a { color: var(--accent); }
 .q-expl { margin-top: 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 13px 15px; font-size: 14px; }
 .q-expl.correct { background: var(--green-soft); }
 .q-expl.wrong { background: var(--red-soft); }
+
+/* Star toggle for quiz questions (question bank, preview, quiz attempt). */
+.fav-star {
+  flex: none; width: 32px; height: 32px; padding: 0; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 17px; color: var(--text-3);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px;
+  cursor: pointer; transition: transform .12s, color .12s, background .12s, border-color .12s;
+}
+.fav-star:hover { color: var(--amber); border-color: var(--amber); transform: scale(1.06); }
+.fav-star.on { color: var(--amber); background: var(--amber-soft); border-color: var(--amber); }
+.fav-star:disabled { opacity: .55; cursor: default; }
 
 /* ---------- Review ---------- */
 .review-stage { max-width: 640px; margin: 0 auto; }
@@ -410,7 +485,22 @@ body.immersive .page-head { margin-bottom: 10px; }
 body.immersive .page-head .title-wrap h1 { font-size: 26px; }
 body.immersive .kp-group > summary.tree-l1 { font-size: 22px; }
 
-/* ---------------- Interactive desk pet ---------------- */
+/* ---------------- Interactive desk pet ----------------
+ *
+ * One element, one position, always clickable.
+ *
+ * This used to be a hover-reveal: the pet stayed transparent until the pointer
+ * came within 190px of the corner, and a separate pill in the same corner showed
+ * the timer when it was hidden. That produced two floating things fighting over
+ * the same pixels — the pet could reappear on top of the pill, the pill faded out
+ * while the pet covered it, and the collapse flag could be set while the pet was
+ * still shown, leaving it 0×0 and impossible to grab. Wandering away from the
+ * corner was the only way to change any of it.
+ *
+ * Now the pet is simply present (or simply hidden), and its timer travels WITH
+ * it, so wherever it is dragged, the thing you want to click is right there and
+ * nothing else is stacked on it.
+ */
 #pet {
   position: fixed;
   bottom: 16px;
@@ -421,22 +511,25 @@ body.immersive .kp-group > summary.tree-l1 { font-size: 22px; }
   user-select: none;
   -webkit-user-select: none;
   touch-action: none;
-  opacity: 0;
-  transform: translateY(36px);
-  transition: opacity .25s ease, transform .25s ease;
-  pointer-events: none;
-}
-#pet.show {
   opacity: 1;
-  transform: translateY(0);
+  transition: opacity .2s ease, transform .2s ease;
   pointer-events: auto;
+  /* A small opaque hit area is what makes it draggable; the transparent corners
+     of the PNG let clicks through because only the <img> is a pointer target. */
 }
+/* Collapsed: hidden, but only while the flag and the artwork agree (see the
+   .show rule below — the two can never disagree). */
+body.pet-hidden #pet { display: none; }
 #pet img {
   width: 100%;
   height: auto;
   display: block;
   filter: drop-shadow(0 6px 12px rgba(0,0,0,.22));
   transition: transform .18s ease;
+  /* Only the artwork is a pointer target, so the transparent corners of the box
+     do not eat clicks meant for the page. */
+  pointer-events: auto;
+  cursor: grab;
 }
 #pet:hover img { transform: scale(1.05); }
 #pet.dragging { cursor: grabbing; }
@@ -480,6 +573,7 @@ body.immersive .kp-group > summary.tree-l1 { font-size: 22px; }
   position: absolute;
   bottom: calc(100% + 6px);
   right: 0;
+  z-index: 2;
   background: #fff;
   border: 1.5px solid var(--border);
   border-radius: 10px;
@@ -495,7 +589,10 @@ body.immersive .kp-group > summary.tree-l1 { font-size: 22px; }
 #pet-pomo-btn.running { color: var(--red); border-color: var(--red); }
 #pet-pomo-mini {
   position: fixed;
-  bottom: 12px;
+  /* Sits clear of the pet box above it (the pet is 96×~92 anchored 16px from the
+     corner), so the two never occupy the same pixels and the pill stays clickable
+     whichever one is showing. */
+  bottom: 14px;
   right: 12px;
   z-index: 61;
   background: var(--surface);
@@ -507,4 +604,143 @@ body.immersive .kp-group > summary.tree-l1 { font-size: 22px; }
   color: var(--brand);
   box-shadow: 0 4px 14px rgba(0,0,0,.18);
   cursor: pointer;
+  /* A small floating pill: keep its own click, let everything around it through. */
+  pointer-events: auto;
+  transition: opacity .25s ease, transform .25s ease;
 }
+
+/* The standalone pill exists ONLY for the collapsed state. While the pet is up it
+   is gone entirely (not merely transparent), so it can never sit under the pet,
+   steal a drag, or be clicked by accident. */
+#pet.show ~ #pet-pomo-mini { display: none; }
+body.pet-hidden #pet-pomo-mini { display: block; opacity: 1; pointer-events: auto; }
+
+/* The collapse/expand control sits OUTSIDE #pet (see index.html) so collapsing the
+   pet can never hide the way to bring it back. It is pinned to the corner where the
+   timer lives, and it is the ONLY extra floating control — one small button. */
+#pet-hide {
+  position: fixed;
+  width: 22px;
+  height: 22px;
+  z-index: 62;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+  background: #fff;
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  box-shadow: 0 2px 8px rgba(0,0,0,.18);
+  /* Below-left of the pet's tile, clear of the artwork, the timer block above it,
+     and the corner pill below it — the corner is crowded, so this button gets its
+     own pocket of space instead of being stacked on something. */
+  right: 124px;
+  bottom: 20px;
+}
+/* Visible in BOTH states (that is the point), except on phones where the corner is
+   reserved for the bottom nav. */
+#pet-hide { display: flex; }
+#pet-hide:hover { color: var(--red); border-color: var(--red); }
+
+/* Bring the pet back from Settings. */
+#pet-show { display: none; }
+body.pet-hidden #pet-show { display: inline-flex; }
+
+/* ================= Mobile / responsive ================= */
+@media (max-width: 768px) {
+  #sidebar {
+    position: fixed; top: auto; bottom: 0; left: 0; right: 0;
+    width: 100%; height: auto; flex-direction: row; align-items: stretch;
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+    background: #0b1220; z-index: 120; box-shadow: 0 -2px 12px rgba(0,0,0,.25);
+  }
+  .brand { display: none; }
+  #nav { flex-direction: row; gap: 2px; width: 100%; justify-content: space-around; }
+  .nav-item {
+    flex-direction: column; gap: 3px; padding: 7px 3px; font-size: 10px;
+    text-align: center; align-items: center; min-width: 0;
+  }
+  .nav-item .nav-ico { font-size: 19px; width: auto; }
+  .nav-item span:last-child:not(.badge) { display: none; } /* hide text labels, keep icons */
+  .nav-item .badge { position: absolute; top: 2px; right: 8px; font-size: 9px; padding: 1px 5px; }
+  #sidebar .sidebar-footer { display: none; }
+  #main { margin-left: 0; padding-bottom: 76px; }
+  .view { padding: 16px 14px 30px; }
+  .page-head { flex-direction: column; align-items: stretch; gap: 10px; }
+  .page-head .title-wrap h1 { font-size: 21px; }
+  .grid-2 { grid-template-columns: 1fr; }
+  .grid-3, .grid-4 { grid-template-columns: repeat(2, 1fr); }
+  .modal { max-width: 96vw; padding: 20px; margin: 0 auto; }
+  .flashcard { min-height: 230px; padding: 24px 18px; }
+  .flashcard .card-text { font-size: 18px; }
+  .review-grade { grid-template-columns: repeat(2, 1fr); }
+  .tabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
+  .tab { white-space: nowrap; flex: none; }
+  .lesson-item { flex-wrap: wrap; }
+  .lesson-meta { width: 100%; margin-left: 0; }
+  .kp-filters, .kp-head { flex-wrap: wrap; }
+  .q-option { font-size: 14px; }
+  #feature-launcher { left: 12px !important; bottom: 84px !important; padding: 9px 14px !important; }
+}
+@media (max-width: 480px) {
+  .grid-3, .grid-4 { grid-template-columns: 1fr; }
+  .stat .stat-num { font-size: 24px; }
+  .view { padding: 14px 12px 28px; }
+  .btn-lg { padding: 11px 16px; font-size: 14px; }
+}
+@media (max-width: 768px) {
+  #pet { display: none !important; }        /* hide desktop pet on phones */
+  #pet-pomo-mini { bottom: 84px !important; left: 12px !important; }
+}
+/* ---------- Formula library: chapter sections ----------
+   A subject's formulas are grouped under the chapter they came from, so the
+   library reads like the course instead of one flat list. The section header
+   sticks while its formulas scroll past, which is what makes a long chapter
+   navigable. */
+.formula-chapter {
+  margin: 14px 0 2px;
+  border-left: 3px solid var(--border);
+  padding-left: 12px;
+}
+.formula-chapter > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 2px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg, #f8fafc);
+  border-bottom: 1px dashed var(--border);
+}
+.formula-chapter > summary::-webkit-details-marker { display: none; }
+.formula-chapter > summary::before {
+  content: "▾";
+  font-size: 11px;
+  color: var(--muted, #64748b);
+  transition: transform .15s ease;
+}
+.formula-chapter:not([open]) > summary::before { content: "▸"; }
+.formula-chapter-name {
+  font-weight: 650;
+  font-size: 13.5px;
+  letter-spacing: .2px;
+}
+.formula-chapter-count {
+  font-size: 11.5px;
+  color: var(--muted, #64748b);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  background: var(--surface);
+  margin-left: auto;
+}
+.formula-chapter-body { padding-top: 2px; }
+
+/* ---------- Flashcards ---------- */

@@ -235,7 +235,12 @@ function recallKeyboard(e) {
 function startPointRecall(card) {
   if (!card) return;
   const all = [...card.querySelectorAll("mark.hl")];
-  all.forEach((m) => setCloze(m, false));
+  // Clean slate before hiding: finishRecall deliberately leaves the marks revealed
+  // (green/red) to show the outcome, and only exitRecall clears those classes. A
+  // second run therefore started with stale cloze-revealed on every mark — which
+  // painted the fresh blanks green rather than grey — and with cloze-wrong on the
+  // terms missed last time, so the first revealed term already looked failed.
+  all.forEach((m) => { m.classList.remove("cloze-revealed", "cloze-wrong"); setCloze(m, false); });
   all.forEach((m) => setCloze(m, true));
   if (!all.length) { toast("该知识点没有可回忆的术语。", "error"); return; }
   recallState = { card, marks: all, i: 0, weak: [], active: true, done: false };
@@ -3466,8 +3471,13 @@ function renderPointsTab(body, lesson) {
       else startPointRecall(rbtn.closest(".kp-section"));
       return;
     }
-    // In-recall self-rating buttons.
-    const rate = e.target.closest(".recall-rate");
+    // In-recall self-rating buttons. data-got sits on the <button>, not on the
+    // .recall-rate wrapper this used to read it from: the wrapper's dataset.got
+    // was always undefined, so rateRecall("undefined") never matched got === "0",
+    // took the "remembered" branch and *removed* the wrong marker — both buttons
+    // painted the term green. (The 1/2 keyboard path passed a real value, which
+    // is why it looked like it worked sometimes.)
+    const rate = e.target.closest("[data-got]");
     if (rate) { rateRecall(rate.dataset.got); return; }
     const btn = e.target.closest(".cloze-btn");
     if (btn) {

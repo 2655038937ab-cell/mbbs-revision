@@ -414,9 +414,14 @@ details.mm-details[open] .mm-arrow { transform: rotate(90deg); }
 
 /* ---------- Key-point highlight & figures ---------- */
 mark.hl { background: #fde68a; color: #1f2937; font-weight: 700; padding: 0 2px; border-radius: 3px; }
-mark.hl.cloze-hidden { background: #e2e8f0; color: #64748b; border-bottom: 2px solid var(--brand); cursor: pointer; }
 mark.hl.cloze-revealed { background: #bbf7d0; border-bottom: 2px solid var(--green); }
 mark.hl.cloze-wrong { background: #fecaca; border-bottom: 2px solid var(--red); }
+/* These three rules have identical specificity, so source order decides which one
+   paints a mark that carries more than one state class. Hidden must come last: a
+   blanked-out term is never "revealed", and with this rule first a leftover
+   cloze-revealed (or cloze-wrong) from a previous run made every blank look green
+   or red instead of grey. */
+mark.hl.cloze-hidden { background: #e2e8f0; color: #64748b; border-bottom: 2px solid var(--brand); cursor: pointer; }
 .kp-section.recalling .kp-subtitle { text-decoration: underline; text-underline-offset: 3px; }
 .recall-tip { font-size: 13px; color: var(--text-2); background: var(--surface-2); padding: 8px 12px; border-radius: 8px; margin-bottom: 8px; }
 .recall-rate .btn { padding: 4px 10px; font-size: 13px; }

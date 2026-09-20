@@ -259,11 +259,94 @@ def pair_verdict(a, b, bag_a, bag_b):
     return None
 
 
+# ------------------------------------------------- entity-preservation guard
+# The AI review merged "Aripiprazole: dose range and adverse effects" into
+# "Clozapine: dose range and adverse effects". Two different drugs: the titles
+# share five of seven words because a pharmacology lecture titles half its points
+# "<drug>: dose range and adverse effect profile", so the term-coverage check
+# above was satisfied by the scaffolding while the one word that must never be
+# lost — the drug itself — was missing from the survivor. The same happened to
+# cocaine/ketamine and methamphetamine/psilocybin.
+#
+# So any NAME-like term of the entry being deleted must appear in the survivor's
+# text somewhere. Name-like means a long latin word outside the generic title
+# vocabulary (dose, range, adverse, profile, mechanism …) or a CJK run of two or
+# more characters. This is what stops an entity swap from passing as a rewrite.
+# Words that only glue a title together: dropping one of these never loses a fact.
+# Everything else in a title is CONTENT and must be found in the survivor before the
+# other copy may be deleted. Contrastive adjectives deliberately stay content —
+# primary/secondary, vulvar/vaginal, typical/atypical — because treating them as
+# generic is exactly what produced "Primary Disorder → Secondary Disorder" and
+# "vulvar squamous tumours → vaginal squamous tumours" merges.
+GLUE_WORDS = {
+    "the", "a", "an", "of", "and", "or", "with", "without", "in", "on", "at", "to",
+    "for", "from", "by", "as", "is", "are", "was", "were", "be", "been", "vs",
+    "versus", "plus", "also", "its", "their", "this", "that", "these", "those",
+    "which", "when", "where", "what", "how", "why", "into", "than", "then", "there",
+    "use", "used", "uses", "using", "show", "shows", "shown", "based", "due", "see",
+    "overview", "summary", "introduction", "note", "notes", "remark", "remarks",
+    "aspect", "aspects", "detail", "details", "point", "points", "concept", "concepts",
+    "definition", "definitions", "example", "examples", "type", "types", "kind",
+    "kinds", "form", "forms", "part", "parts", "step", "steps", "stage", "stages",
+}
+WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9\-]*")
+CJK_RUN = re.compile(r"[\u4e00-\u9fff]{2,}")
+
+
+def content_terms(title):
+    """The meaningful terms of a title: latin words of four or more characters, any
+    shorter token that carries a capital (acronyms: HSC, RAI, D2, CT) and CJK runs."""
+    out = set()
+    for raw in WORD_RE.findall(str(title or "")):
+        w = raw.lower()
+        if w in GLUE_WORDS or w.isdigit():
+            continue
+        if len(w) >= 4 or (len(w) >= 2 and any(c.isupper() for c in raw)):
+            out.add(w)
+    for run in CJK_RUN.findall(str(title or "")):
+        out.add(run)
+    return out
+
+
+def keep_evidence(keep):
+    """The survivor's text as (latin word set, punctuation-free string) so a term can
+    be looked up as a word for latin and as a substring for CJK."""
+    text = " ".join([str(keep.get("title") or ""), explanation_text(keep.get("explanation")),
+                     keyterms_text(keep)])
+    words = {w.lower() for w in WORD_RE.findall(text)}
+    joined = re.sub(r"[^\w\u4e00-\u9fff]+", "", text.lower())
+    return words, joined
+
+
+def entity_conflict(drop, keep):
+    """Terms of the point being deleted that the survivor never states anywhere.
+
+    This is the guard the AI review needed: it merged "Aripiprazole: dose range and
+    adverse effects" into "Clozapine: dose range and adverse effects" (different
+    drugs) and swallowed "Primary Disorder" into "Secondary Disorder" — the shared
+    scaffolding satisfied every similarity measure while the one distinguishing term
+    was missing from the survivor. Now nothing is deleted unless every content term
+    of its title is present in the survivor's title, explanation or key terms.
+    """
+    words, joined = keep_evidence(keep)
+    missing = []
+    for t in sorted(content_terms(drop.get("title"))):
+        if re.fullmatch(r"[a-z0-9\-]+", t):
+            if t not in words:
+                missing.append(t)
+        elif t not in joined:
+            missing.append(t)
+    return missing
+
+
 def _safe(drop, keep, why):
     """Same guard the AI merges go through: never delete a point whose own terms
     the surviving one does not state (谷氨酸与赖氨酸… must not fold into 谷氨酸…,
-    SMA territory must not fold into the IMA territory)."""
+    SMA territory must not fold into the IMA territory), and never delete a point
+    whose name the survivor does not mention at all."""
     if drop is keep or coverage(drop, keep, include_body=True) < COV_MIN:
+        return None
+    if entity_conflict(drop, keep):
         return None
     return (drop, keep, why)
 
@@ -294,6 +377,7 @@ def dedupe_points(points):
 # and only the pairs it calls identical are merged. Candidates are pre-filtered
 # by vocabulary overlap so the "call" stays cheap.
 CAND_FLOOR = 0.40       # term-bag cosine needed to be worth asking about
+AI_COV_MIN = 0.75       # share of the dropped point's own words the survivor must state
 LLM_BATCH = 20          # pairs per API call
 
 JUDGE_SYS = (
@@ -458,6 +542,24 @@ def merge_confirmed(kept, same, drops):
         drop, keep = (a, b) if (ab, body_richness(a)) >= (ba, body_richness(b)) else (b, a)
         if coverage(drop, keep) < COV_MIN:
             drop, keep = keep, drop
+        # The model called aripiprazole and clozapine the same point; the coverage
+        # check above agreed, because both titles are "<drug>: dose range and
+        # adverse effects". Refuse any merge that would drop a name the survivor
+        # never mentions.
+        if entity_conflict(drop, keep):
+            skipped += 1
+            continue
+        # Even with the names intact the model still folds a SPECIFIC detail into a
+        # GENERAL point ("Aripiprazole: dose range and adverse effects" into
+        # "Antipsychotic adverse effect frequency", "Antisulpride: low EPS risk"
+        # into "Amisulpride: dose range and adverse effects") — deleting the fact
+        # that the title was about. The judge prompt calls that DIFFERENT; the
+        # model does it anyway. So an AI merge now has to clear a much higher bar:
+        # three quarters of the dropped point's own body words must already appear
+        # in the survivor's text, not just its title terms.
+        if coverage(drop, keep, include_body=True) < AI_COV_MIN:
+            skipped += 1
+            continue
         drops[id(drop)] = (keep, f"AI 判定与「{str(keep.get('title'))[:30]}」是同一条")
         used.add(i)
         used.add(j)

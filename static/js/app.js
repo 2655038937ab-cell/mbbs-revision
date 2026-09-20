@@ -3705,6 +3705,43 @@ function bigramSim(a, b) {
 function pointBodyKey(p) {
   return normPointTitle(String(p && p.title || "") + String(explanationText(p && p.explanation) || ""));
 }
+/* Title words that only glue a phrase together — dropping one never loses a fact. */
+const POINT_GLUE_WORDS = new Set(("the a an of and or with without in on at to for from by as is are was were be been vs versus " +
+  "plus also its their this that these those which when where what how why into than then there use used uses using " +
+  "show shows shown based due see overview summary introduction note notes remark remarks aspect aspects detail details " +
+  "point points concept concepts definition definitions example examples type types kind kinds form forms part parts " +
+  "step steps stage stages").split(" "));
+/* The meaningful terms of a point title: latin words of 4+ characters, shorter tokens
+   that carry a capital (acronyms: HSC, RAI, D2, CT) and CJK runs. */
+function pointContentTerms(title) {
+  const out = new Set();
+  for (const raw of String(title || "").match(/[A-Za-z][A-Za-z0-9-]*/g) || []) {
+    const w = raw.toLowerCase();
+    if (POINT_GLUE_WORDS.has(w) || /^[0-9]+$/.test(w)) continue;
+    if (w.length >= 4 || (w.length >= 2 && /[A-Z]/.test(raw))) out.add(w);
+  }
+  for (const run of String(title || "").match(/[\u4e00-\u9fff]{2,}/g) || []) out.add(run);
+  return [...out];
+}
+/* Everything the surviving point says, as a word set plus a punctuation-free string. */
+function pointKeepEvidence(p) {
+  const text = [String(p && p.title || ""), explanationText(p && p.explanation) || "",
+    (p && (p.keyTerms || []).join(" ")) || ""].join(" ");
+  const words = new Set((text.match(/[A-Za-z0-9-]+/g) || []).map((w) => w.toLowerCase()));
+  const joined = text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  return { words, joined };
+}
+/* True when dropping `drop` in favour of `keep` would lose a term: every content
+   word of the dropped title has to appear somewhere in the survivor. Without this,
+   "Interpreting Pituitary vs Target Hormone Levels: Primary Disorder" folded into
+   the Secondary Disorder point (the shared scaffolding satisfied every similarity
+   measure while the distinguishing word was absent) — as did vulvar→vaginal and
+   aripiprazole→clozapine in the pharmacology decks. */
+function pointTermLoss(drop, keep) {
+  const { words, joined } = pointKeepEvidence(keep);
+  return pointContentTerms(drop && drop.title).filter((t) =>
+    /^[a-z0-9-]+$/.test(t) ? !words.has(t) : !joined.includes(t));
+}
 function dedupePoints(list) {
   const items = (list || [])
     .filter((p) => p && String(p.title || "").trim())
@@ -3730,23 +3767,27 @@ function dedupePoints(list) {
       }
       const [short, long] = a.key.length <= b.key.length ? [a, b] : [b, a];
       const bodySim = bigramSim(a.body, b.body);
+      // No merge that would drop a title term the survivor never says.
+      const dropsShort = pointTermLoss(short.p, long.p).length === 0;
+      const dropsLong = pointTermLoss(long.p, short.p).length === 0;
       // One title extends the other ("…基础化学知识" vs "…基础化学知识与生物有机
       // 分子知识") and the bodies overlap -> keep only the fuller point, since the
       // shorter one is a strict subset of it.
       if (long.key.startsWith(short.key)
         && short.key.length / long.key.length >= 0.5
-        && bodySim >= 0.45) {
+        && bodySim >= 0.45
+        && dropsShort) {
         dropped.add(short);
         continue;
       }
       // The shorter title is contained in the middle of the longer one ("时值" vs
       // "基强度与时值作为兴奋性的数值指标") -> again the short one is a subset.
-      if (short.key.length >= 4 && long.key.includes(short.key) && bodySim >= 0.55) {
+      if (short.key.length >= 4 && long.key.includes(short.key) && bodySim >= 0.55 && dropsShort) {
         dropped.add(short);
         continue;
       }
       // Near-identical titles AND overlapping bodies -> the later one goes.
-      if (bigramSim(a.key, b.key) >= 0.85 && bodySim >= 0.6) dropped.add(b);
+      if (bigramSim(a.key, b.key) >= 0.85 && bodySim >= 0.6 && dropsLong) dropped.add(b);
     }
   }
   return items.filter((x) => !dropped.has(x)).map((x) => x.p);

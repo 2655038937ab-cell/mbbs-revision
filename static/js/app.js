@@ -21,6 +21,18 @@ function toast(msg, type = "") {
   setTimeout(() => t.remove(), 4200);
 }
 
+/* Grading a flashcard (or any study item) is a server WRITE, and a trial visitor has
+ * read-only access. Without this the PUT came back 401, the promise rejected
+ * unhandled and the card simply stayed where it was: on the public trial site the
+ * flashcards looked broken. Block the call and say why — the same way the AI buttons
+ * already explain themselves (see TRIAL_AI_MESSAGE in api.js). */
+const TRIAL_WRITE_MSG = "试用版仅可浏览：评分不会保存（登录后即可记录进度）";
+function blockTrialWrite() {
+  if (!api.isTrialMode()) return false;
+  toast(TRIAL_WRITE_MSG, "warn");
+  return true;
+}
+
 function parseJSON(content) {
   if (typeof content !== "string") return content;
   let s = content.trim();
@@ -1290,6 +1302,15 @@ ${languageReminder()}${subjectNotesRule(subject)}
 
 ${DERIVATION_RULE}
 
+STRICT rules — a card earns its place only if answering it teaches the subject:
+- ONE FACT PER CARD. If a key point carries a list, make one card per item, or one card for the principle that organises the list. Never a card whose answer is "A, B, C and D".
+- TEST THE SUBJECT, NEVER THE LECTURE'S PACKAGING. No card asks what the learning outcomes, objectives or aims are, what the session covers, which textbook or chapter something came from, or how the course is assessed. Key points often contain such lines ("Learning outcomes: …", "Objectives: …", "References: …") — when one does, ignore the framing and make the card from the content it names; "What are the learning outcomes for X?" can only be answered by remembering how the slides were worded.
+- NEVER ATTRIBUTION. No "who discovered / described / defined / cloned it", no "in which year", no "who won which prize". Test the fact, not the name and date. Names stay only where the name itself is examinable — an eponymous sign a clinician must recognise, for instance.
+- THE FRONT MUST STAND ALONE. A student who has never seen these slides must be able to answer it. Never refer to "the diagram", "the figure above", "this table" or "slide N", and never ask what a picture shows — state the finding instead.
+- Keep the answer to one or two sentences of real content: if an honest answer needs more, split it into several cards. Never answer with a paragraph.
+- The front is a prompt, not a topic title — it must force recall of a specific fact ("Which nerve supplies …?", "What happens to X when Y?", "Why does Z …?"). Prefer why / what-happens questions over yes-no.
+- Use only facts actually present in the key points: do not invent, assume or import outside knowledge, and keep every term exactly as the key points name it.
+
 Return JSON: {"cards":[{"front":"...","back":"..."}]}
 
 Key points:
@@ -1311,6 +1332,8 @@ Each question:
 
 STRICT rules — anchor every question to the source material ONLY:
 - TEST UNDERSTANDING, NEVER ATTRIBUTION. Do not write questions about who discovered, proposed, first described or named something; which scientist did it; in which year; in which journal; or who won which prize. These test recall of names and dates, teach the student nothing about the subject, and are the fastest way to make a question worthless. The ONE exception is when the key point itself is that attribution AND the course treats it as examinable — otherwise ignore every name, year and citation in the key points.
+- TEST THE SUBJECT, NEVER THE LECTURE'S OWN PACKAGING. Never ask what the learning outcomes, objectives or aims are, what a "key point" or "stated objective" is, what the session will cover, what the lecturer recommends, which textbook/chapter/slide/page something came from, or how the course is assessed. "Which of the following is a stated learning outcome for X?" and "Which textbook is the primary reference for X?" are the worst questions in a bank: the only way to answer them is to remember how the slides were worded, so they teach no medicine at all. Expect the key points to contain such lines ("Learning outcomes: …", "Objectives: …", "References: …"): when a point is one of those, ignore its framing and test the content it names — from "Learning outcome: describe the causes and clinical features of intestinal obstruction" ask about the causes or the clinical features themselves. Never let the OPTIONS be the objective sentences either.
+- Every stem must be answerable by a student who has never seen these slides but knows the subject. If the question cannot be answered without knowing how this particular lecture was organised, it is not a question about medicine — rewrite it around the underlying fact.
 - Prefer questions that require reasoning — "why does this happen", "what would change if", "which prediction follows", "which quantity results" — over questions that ask for a bare fact. A student who understands the material should be able to answer; a student who only memorised a phrase should not.
 - Every question and every option must come from facts actually present in the key points. Do NOT introduce, invent, or assume any concept, structure, number, or terminology that is not in the key points. Do not borrow from general knowledge.
 - You may only base a question on a concept the key points actually state. If a concept isn't in the key points, don't test it.
@@ -1422,11 +1445,77 @@ function explanationAnswerLetter(text, count) {
  * A question that trips either is dropped and regenerated rather than shown.
  */
 const QUIZ_TAKEBACK = /(?:也|仍|其实|实际)?(?:是|为)?正确的[，。；]|该选项(?:本身)?正确|选项(?:本身)?(?:也)?正确|本题(?:可能)?有问题|需要重新检查|实际上[^。]{0,12}正确|但[^。]{0,24}正确/;
+/* Questions about the LECTURE rather than about the subject: what the learning
+ * outcomes/objectives are ("Which of the following is a stated learning outcome
+ * for X?"), what the session will cover, which textbook or chapter something came
+ * from, how the course is assessed. They can only be answered by remembering how
+ * the slides were worded — they teach no medicine — and they were the most common
+ * junk item in the real bank: 85 "learning outcome" questions out of 20,349, whose
+ * options were literally the objective sentences off the slide.
+ *
+ * Deliberately narrow, because two of these patterns over-matched badly at first:
+ * "What is the most likely outcome of this interaction?", "the functional outcome
+ * of the reconstruction", "the main outcome of their work", "expected outcome for
+ * the majority" are ordinary medical English and were being dropped wholesale. A
+ * bare outcome/objective therefore never counts — it has to sit in a teaching
+ * context ("outcome of this lecture", "lecture outcomes", "stated objectives") —
+ * while phrases that merely SOUND meta stay: "What is the purpose of bolus
+ * tracking in CT?", "Explain the clinical significance of venous anastomoses". */
+const QUIZ_JUNK_STEM = [
+  "learning\\s+(outcome|objective)s?",
+  "(outcome|objective)s?\\s+(of|for)\\s+(this|the|these)\\s+(lecture|session|chapter|course|module|component|teaching|topic|block|unit)\\b",
+  "lectures?'?s?\\s+(learning\\s+)?(outcome|objective|aim)s?\\b",
+  "(aim|goal)s?\\s+of\\s+(this|the)\\s+(lecture|session|chapter|course|module|teaching)\\b",
+  "at\\s+the\\s+end\\s+of\\s+(this|the)\\s+(lecture|session|chapter)",
+  "\\b(objectives?|outcomes?)\\s+(listed|stated)\\b|\\b(listed|stated)\\s+(learning\\s+)?(objectives?|outcomes?)\\b",
+  "which\\s+textbook\\b|according\\s+to\\s+the\\s+textbook\\b|\\bprimary\\s+textbook\\b|\\btextbook\\s+(reading|reference|edition)\\b",
+  "\\b(recommended|further|suggested|required)\\s+reading\\b|\\breading\\s+list\\b",
+  "\\b(course|module)\\s+guidelines?\\b|\\bassessment\\s+(criteria|format)\\b|\\bmarking\\s+scheme\\b|\\bexam\\s+format\\b",
+  "what\\s+(will|would)\\s+(be\\s+)?covered\\b|\\bagenda\\s+(of|for)\\s+(this|the)\\s+(lecture|session|course|module|topic)",
+  "which\\s+(chapter|slide|page)\\b|how\\s+many\\s+(slides|pages)\\b",
+  // Chinese lectures: only asking forms, so a lecture that legitimately teaches a
+  // study framework ("课程用智慧层次模型指导学习目标") is not swallowed by the noun alone.
+  "学习目标(是|为|包括|有哪)|(本章|本节课|本讲|这门课|该课程)的?(学习目标|教学目的|教学大纲)|(下列|以下|哪个|哪一项)是.{0,10}(学习目标|教学目的)",
+  "教学目的(是|为|包括)|本章目的|教学大纲|考试范围|参考书(是|为|哪)",
+  "根据(本章|本节课|本讲|本课程|该课程)?的?(学习目标|教学大纲|教学目的|课程安排)",
+  // Asking what the lecture covers, one level down from the objectives.
+  "topics?\\s+(that\\s+are\\s+)?covered\\s+in\\s+(the|this)\\s+(lecture|session|chapter|course)|key\\s+topic\\s+covered",
+  "what\\s+does\\s+(the|this)\\s+(lecture|session|chapter)\\s+(cover|discuss|address)",
+  // Attribution and trivia. The prompt already bans "who discovered / which year"
+  // items; these catch the few that still got through ("Who discovered X-rays, and
+  // when?", "In which year did the WHO declare tuberculosis a global emergency?").
+  // Deliberately NOT included: a stem that names a researcher while asking about the
+  // finding itself ("Katz and co-workers … what was the outcome of their work?") —
+  // that answer is real physiology, so it stays.
+  "\\bwho\\s+(first\\s+)?(discovered|described|proposed|introduced|coined|invented|demonstrated|cloned|established|identified)\\b",
+  "\\bin\\s+(which|what)\\s+year\\s+(did|was|were)\\b",
+  "\\bwhich\\s+(scientist|researcher|physician)\\b",
+  "\\bwho\\s+(won|defined)\\b|\\band\\s+who\\s+(described|discovered|proposed|defined)\\b",
+  // Deliberately absent: "named after" and "eponym". Those words appear in real
+  // questions about examinable names — why the hippocampus is called that, what
+  // Duchenne's smile is, which protease is named for its substrate — so matching
+  // them would delete good items along with the trivia.
+];
+const QUIZ_META = new RegExp(QUIZ_JUNK_STEM.join("|"), "i");
+/* Option texts that collapse a question into a guess ("all of the above", "none of
+ * the above", "A and B are both true"). The prompt bans them outright, so a
+ * generated one means the request was ignored: drop the question and retry. The
+ * bank cleaner reads this same literal and, where the offending option is only a
+ * distractor, removes just that option instead of the whole question. */
+const QUIZ_BANNED_OPTION = /all\s+of\s+the\s+above|none\s+of\s+the\s+above|\bboth\s+a\s+and\s+b\b|以上(都|均)对?|以上都不是|a\s*和\s*b\s*都/i;
 function quizQuestionInvalid(q) {
   if (!q || !Array.isArray(q.options) || q.options.length < 2) return true;
   const n = q.options.length;
   const ans = Number(q.answer);
   if (!(ans >= 0 && ans < n)) return true;
+  // A question about the lecture's own objectives/textbook cannot be answered from
+  // the subject itself, so it is dropped and regenerated like any other broken item.
+  if (QUIZ_META.test(String(q.question || ""))) return true;
+  // "All of the above" / "None of the above" as an option: the prompt forbids it, so
+  // one appearing means the instruction was ignored. It also silently breaks the
+  // item whenever it is the correct choice, because then nothing in the options is
+  // the fact being tested.
+  if (q.options.some((o) => QUIZ_BANNED_OPTION.test(String(o)))) return true;
   // Four copies of the same choice (seen in a real bank: one citation repeated in
   // every slot) is not a question.
   if (new Set(q.options.map((o) => String(o))).size !== n) return true;
@@ -4198,6 +4287,7 @@ function renderCardsTab(body, lesson, cards) {
   };
   const grade = async (g) => {
     if (!flipped || grading) return;
+    if (blockTrialWrite()) return;
     grading = true;
     const c = cards[idx];
     const updated = schedule(c, g);
@@ -7095,6 +7185,7 @@ function requeueLater(entry) {
 
 async function gradeStudyEntry(value) {
   if (!reviewFlipped || reviewPos >= reviewQueue.length) return;
+  if (blockTrialWrite()) return;
   const entry = reviewQueue[reviewPos];
 
   if (entry.kind === "card") {

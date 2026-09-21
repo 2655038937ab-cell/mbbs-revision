@@ -1,0 +1,13 @@
+# Automatic HTTPS for both sites. Replace the hostnames with your own:
+#   - a DuckDNS name works (point its A record at the server's IP)
+#   - sslip.io embeds the IP, so it follows a new server with no DNS work at all
+#     (e.g. 203-0-113-7.sslip.io -> 203.0.113.7)
+mbbs.example.duckdns.org {
+	encode zstd gzip          # the client JS is 500 KB raw / 155 KB gzipped
+	reverse_proxy mbbs:8756
+}
+
+203-0-113-7.sslip.io {
+	encode zstd gzip
+	reverse_proxy pku:8756
+}

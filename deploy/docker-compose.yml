@@ -1,0 +1,45 @@
+# Two instances of the same image behind one Caddy:
+#   mbbs -> the MBBS library (trial mode: anyone may browse, writes need the password)
+#   pku  -> the PKU exchange courses (password protected)
+#
+# Copy this to /opt/mbbs on the server, set the hostnames and the password, then:
+#   docker compose up -d --build
+services:
+  caddy:
+    image: caddy:latest
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  mbbs:
+    build: .
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8756"
+      # Visitors may browse; AI/upload/export stay behind this password.
+      PASSWORD: "${MBBS_PASSWORD:?set MBBS_PASSWORD in .env}"
+      TRIAL_MODE: "1"
+      MAX_UPLOAD_MB: "400"
+      MAX_BODY_MB: "600"
+    volumes:
+      - /srv/mbbs-data:/app/data
+
+  pku:
+    build: .
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8756"
+      # No PASSWORD here: this instance uses the hash stored in its own config.json.
+      MAX_UPLOAD_MB: "400"
+      MAX_BODY_MB: "600"
+    volumes:
+      - /srv/pku-data:/app/data
+
+volumes:
+  caddy-data:
+  caddy-config:

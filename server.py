@@ -337,6 +337,9 @@ MIME = {
     ".ico": "image/x-icon",
     ".woff2": "font/woff2",
     ".map": "application/json",
+    # The PWA manifest needs its own type: served as octet-stream, Chrome ignores it
+    # and the "install app" prompt never appears.
+    ".webmanifest": "application/manifest+json; charset=utf-8",
 }
 
 

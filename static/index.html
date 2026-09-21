@@ -7,6 +7,14 @@
   <link rel="icon" type="image/x-icon" href="favicon.ico" />
   <link rel="apple-touch-icon" href="apple-touch-icon.png" />
   <link rel="icon" type="image/png" sizes="256x256" href="favicon-256.png" />
+  <!-- Installable app (PWA): manifest + theme colour + iOS home-screen hints.
+       The service worker behind this keeps studied lessons readable offline. -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="theme-color" content="#0b1220" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="MBBS Revision" />
   <link rel="stylesheet" href="css/style.css" />
   <!-- KaTeX renders the LaTeX formulas the AI writes ($...$ / $$...$$). Served
        locally so the app keeps working offline. -->
@@ -86,6 +94,10 @@
        by far the heaviest script on the page and most visits never export one. -->
   <!-- Loaded before the app modules: markdown.js reads window.katex. -->
   <script src="vendor/katex/katex.min.js"></script>
+  <!-- Plain script, loaded first: registers the service worker and the install
+       button. Independent of the app module so a browser without support is
+       unaffected. -->
+  <script src="js/pwa.js"></script>
   <script type="module" src="js/app.js"></script>
   <script type="module">
     import { initFeatureLauncher } from "./js/features/launcher.js";

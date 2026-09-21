@@ -1973,6 +1973,13 @@ async function init() {
   const authed = await api.checkAuth();
   if (authed) await enterApp();
   else showLogin();
+  // ?view=review|lessons|mistakes|... — the PWA manifest's shortcuts open the app
+  // straight into a page (installed app: long-press the icon → 今日学习).
+  try {
+    const want = new URLSearchParams(location.search).get("view");
+    const known = ["dashboard", "lessons", "nav", "review", "mistakes", "favs", "progress", "formulas", "tokens", "search", "settings"];
+    if (want && known.includes(want) && authed) navigate(want);
+  } catch { /* malformed query — ignore */ }
   initPet();
   initHiddenMenu();
 }

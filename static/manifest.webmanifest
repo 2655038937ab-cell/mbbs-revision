@@ -1,0 +1,25 @@
+{
+  "name": "MBBS Revision — Active Recall",
+  "short_name": "MBBS Revision",
+  "description": "上传课件，自动提炼知识点、闪卡与题目，并按间隔重复安排今天该复习什么。",
+  "lang": "zh-CN",
+  "start_url": "./?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#f4f6f9",
+  "theme_color": "#0b1220",
+  "categories": ["education", "productivity"],
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "今日学习", "short_name": "今日", "url": "./?view=review" },
+    { "name": "课程列表", "short_name": "课程", "url": "./?view=lessons" },
+    { "name": "错题本", "short_name": "错题", "url": "./?view=mistakes" }
+  ]
+}

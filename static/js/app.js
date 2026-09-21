@@ -2418,6 +2418,18 @@ let lessonsFolderFilter = ""; // "" all, "__none__" unfiled, else folder id
 // lesson and coming back leaves the filter in place, but a reload starts clean.
 let lessonsQuery = "";
 let lessonsQueryTimer = 0;
+/* Does one query token occur in `hay`? An ASCII token needs word boundaries, otherwise
+   the "b" of "B symptoms" matches any word containing b ("blood", "album") and the
+   filter returns half the lecture. CJK has no word boundaries, so it stays a plain
+   substring test. */
+function queryTokenHit(hay, tok) {
+  if (!tok) return true;
+  if (/^[\x00-\x7f]+$/.test(tok)) {
+    const esc = tok.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp("(^|[^a-z0-9])" + esc + "([^a-z0-9]|$)").test(hay);
+  }
+  return hay.includes(tok);
+}
 /* Match a lesson against that query. Every whitespace-separated token has to appear
    somewhere in the title, the original file name or the folder name, so a student can
    search by course code ("HIS28"), by topic ("white cell") or by whatever the lecturer
@@ -2425,7 +2437,7 @@ let lessonsQueryTimer = 0;
 function lessonMatchesQuery(l, q) {
   const folder = (currentFolders.find((f) => f.id === l.folderId) || {}).name || "";
   const hay = [l.title, l.filename, folder].filter(Boolean).join(" ").toLowerCase();
-  return String(q || "").toLowerCase().split(/\s+/).filter(Boolean).every((t) => hay.includes(t));
+  return String(q || "").toLowerCase().split(/\s+/).filter(Boolean).every((t) => queryTokenHit(hay, t));
 }
 // Course-code groups the student chose to hide on the Lessons page (e.g. keep
 // only HNS visible while revising neuro). Persisted per browser.
@@ -2831,6 +2843,7 @@ async function openLesson(id, tab = "points", opts = {}) {
   currentTab = tab || "points";
   currentView = "lesson";
   quizFavOnly = false; // the "only starred" filter does not carry across lessons
+  quizQuery = "";       // neither does the bank search
   setActivity("study");
   document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
   await renderLessonDetail({ resetScroll: true });
@@ -3479,9 +3492,86 @@ async function renderTabBody(lesson, cards, quiz) {
 let pointsOrderMode = (() => {
   try { return localStorage.getItem("mbbs_points_order") === "slide" ? "slide" : "topic"; } catch { return "topic"; }
 })();
+/* In-lesson search over the knowledge points. Scoped to one lesson (the id it was
+   typed in is remembered) so opening another lesson starts clean. */
+let kpQuery = "";
+let kpQueryLesson = "";
+let kpQueryTimer = 0;
+/* Match a knowledge point against the in-lesson query: every whitespace-separated
+   token must appear in the title, the explanation, its key terms or its tags. A
+   lecture like HIS28 has 162 points, so finding "B symptoms" by scrolling is not
+   realistic. */
+/* Why did this point match? The search looks at the title, the explanation, the key
+   terms and the tags, but a card only renders the title and explanation — so a point
+   matched through its key terms looked like a random hit. Append the matching terms
+   under the card while a query is active. */
+function annotatePointHits(listEl, q) {
+  const toks = String(q).split(/\s+/).filter(Boolean);
+  const lesson = fullLessonCache.get(currentLessonId);
+  const pts = (lesson && lesson.points) || [];
+  listEl.querySelectorAll(".kp-section").forEach((card) => {
+    const idx = Number(card.dataset.idx);
+    const p = Number.isFinite(idx) ? pts[idx] : null;
+    if (!p) return;
+    const visible = card.innerText.toLowerCase();
+    const why = [];
+    for (const term of p.keyTerms || []) {
+      const tl = String(term).toLowerCase();
+      if (toks.some((t) => queryTokenHit(tl, t)) && !visible.includes(tl)) why.push(term);
+    }
+    for (const tag of p.tags || []) {
+      const gl = String(tag).toLowerCase();
+      if (toks.some((t) => queryTokenHit(gl, t)) && !visible.includes(gl)) why.push(tag);
+    }
+    if (!why.length) {
+      // Matched by separate words rather than as a phrase: say so, otherwise the card
+      // looks like a random hit.
+      const phrase = String(q).trim().toLowerCase();
+      const own = [p.title, typeof p.explanation === "string" ? p.explanation : "", (p.keyTerms || []).join(" "), (p.tags || []).join(" ")].join(" ").toLowerCase();
+      if (phrase.includes(" ") && !own.includes(phrase)) {
+        const line2 = document.createElement("div");
+        line2.className = "sub";
+        line2.style.cssText = "font-size:11.5px;margin-top:8px;opacity:.85";
+        line2.textContent = "🔍 部分匹配（本点未连成整句）";
+        card.appendChild(line2);
+      }
+      return;
+    }
+    const line = document.createElement("div");
+    line.className = "sub";
+    line.style.cssText = "font-size:11.5px;margin-top:8px;opacity:.85";
+    line.textContent = "🔍 命中术语 / 标签：" + [...new Set(why)].slice(0, 6).join("、");
+    card.appendChild(line);
+  });
+}
+/* How well does a point match? 0 = the whole phrase is in the title, 1 = the phrase is
+   in the body/terms, 2 = every word appears somewhere but not as a phrase (searching
+   "B symptoms" also hits a point that says "B-cell lymphoma" and "symptoms" in
+   different sentences). Sorting by this puts the phrase hits on top while keeping the
+   looser ones reachable, instead of banning them. */
+function pointMatchRank(p, q) {
+  const phrase = String(q || "").trim().toLowerCase();
+  if (!phrase) return 0;
+  const expl = typeof p.explanation === "string" ? p.explanation : JSON.stringify(p.explanation || "");
+  const title = String(p.title || "").toLowerCase();
+  const rest = [expl, (p.keyTerms || []).join(" "), (p.tags || []).join(" ")].join(" ").toLowerCase();
+  if (title.includes(phrase)) return 0;
+  if (rest.includes(phrase)) return 1;
+  return 2;
+}
+function pointMatchesQuery(p, q) {
+  const expl = typeof p.explanation === "string" ? p.explanation : JSON.stringify(p.explanation || "");
+  const hay = [p.title, expl, (p.keyTerms || []).join(" "), (p.tags || []).join(" ")]
+    .filter(Boolean).join(" ").toLowerCase();
+  return String(q || "").toLowerCase().split(/\s+/).filter(Boolean).every((tok) => queryTokenHit(hay, tok));
+}
 
 function renderPointsTab(body, lesson) {
   const points = lesson.points || [];
+  // Reset the in-lesson search when the lesson changes — and do it BEFORE the template
+  // below is built: resetting after the innerHTML assignment only took effect on the
+  // next render, so the box kept showing the previous lesson's query.
+  if (kpQueryLesson !== currentLessonId) { kpQuery = ""; kpQueryLesson = currentLessonId; }
   if (!points.length) {
     body.innerHTML = emptyState("✨", "No key points yet. Generate them from your slides with AI.",
       `<div style="margin-top:14px"><button class="btn btn-accent btn-lg" id="btn-gen2">✨ Generate study set</button></div>`);
@@ -3501,6 +3591,11 @@ function renderPointsTab(body, lesson) {
       <button class="btn btn-accent" id="btn-feynman">Start self-test${dueCount ? ` (${dueCount})` : ""}</button>
     </div>
     <div class="kp-filters" id="kp-filters">
+      <div style="display:flex;align-items:center;gap:6px;flex:1 1 260px;min-width:220px">
+        <input type="search" id="kp-q" value="${escapeHtml(kpQuery)}" placeholder="🔍 在本课内搜索知识点（标题 / 正文 / 术语 / 标签）"
+          title="输入即筛选本课知识点；按 Esc 清空" style="flex:1;min-width:0;padding:6px 10px;border:1.5px solid var(--border);border-radius:9px;font-size:13px">
+        <span class="sub" id="kp-hits" style="font-size:12px;white-space:nowrap"></span>
+      </div>
       <button class="chip active" data-f="all">全部 (${points.length})</button>
       <button class="chip" data-f="high">🔥 高频 (${highCount})</button>
       <button class="chip" data-f="unmastered">📌 没掌握 (${unmasteredCount})</button>
@@ -3512,6 +3607,17 @@ function renderPointsTab(body, lesson) {
     </div>
     <div id="kp-list"></div>`;
   $("#btn-feynman").addEventListener("click", () => openFeynmanChooser(currentLessonId, points));
+  // In-lesson search: re-render only the list (the chips, toolbar and this input stay
+  // in the DOM, so typing is never interrupted), debounced so a fast typist does not
+  // rebuild the tree on every character.
+  const kpBox = $("#kp-q");
+  if (kpBox) {
+    const apply = () => { kpQuery = kpBox.value; renderList(); };
+    kpBox.addEventListener("input", () => { clearTimeout(kpQueryTimer); kpQueryTimer = setTimeout(apply, 120); });
+    kpBox.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.preventDefault(); clearTimeout(kpQueryTimer); kpBox.value = ""; apply(); }
+    });
+  }
   // Global expand/collapse toggle for the collapsible key-point groups.
   const btnExpand = $("#btn-expand-all");
   btnExpand.addEventListener("click", () => {
@@ -3631,14 +3737,25 @@ function renderPointsTab(body, lesson) {
   });
   let filter = "all";
   const renderList = () => {
+    const q = kpQuery.trim().toLowerCase();
     const filtered = points.filter((p) => {
-      if (filter === "high") return p.importance === "high";
-      if (filter === "unmastered") return !isMastered(p);
+      if (filter === "high" && p.importance !== "high") return false;
+      if (filter === "unmastered" && isMastered(p)) return false;
+      if (q && !pointMatchesQuery(p, q)) return false;
       return true;
     });
+    // Phrase hits first (stable sort keeps the lesson's own order inside each bucket).
+    if (q) filtered.sort((a, b) => pointMatchRank(a, q) - pointMatchRank(b, q));
     const list = $("#kp-list");
+    // Counts next to the box, and a way out when nothing matches.
+    const hits = $("#kp-hits");
+    if (hits) hits.textContent = q ? `${filtered.length} / ${points.length} 条匹配` : "";
     if (!filtered.length) {
-      list.innerHTML = emptyState(filter === "unmastered" ? "🎉" : "🔍", filter === "unmastered" ? "All points mastered — nice work!" : "No points match this filter.");
+      list.innerHTML = q
+        ? emptyState("🔍", `没有匹配「${escapeHtml(kpQuery.trim())}」的知识点。<div style="margin-top:12px"><button class="btn btn-ghost" id="kp-clear-q2">✕ 清空搜索</button></div>`)
+        : emptyState(filter === "unmastered" ? "🎉" : "🔍", filter === "unmastered" ? "All points mastered — nice work!" : "No points match this filter.");
+      const c2 = $("#kp-clear-q2");
+      if (c2) c2.addEventListener("click", () => { kpQuery = ""; const box = $("#kp-q"); if (box) box.value = ""; renderList(); });
     } else if (pointsOrderMode === "slide") {
       // Lecture order: one flat pass over the slides, each point labelled with the
       // theme it belongs to so the grouping is still visible.
@@ -3652,6 +3769,11 @@ function renderPointsTab(body, lesson) {
     } else {
       const tree = buildPointTree(filtered);
       list.innerHTML = renderPointTree(tree, lesson, 0, new Set());
+    }
+    // A hit inside a collapsed group would be invisible, so searching opens them.
+    if (q) {
+      list.querySelectorAll("details.kp-group").forEach((d) => { d.open = true; });
+      annotatePointHits(list, q);
     }
     // Apply any saved user crop (show the zoomed region), wire the crop button
     // and the "view full slide" click.
@@ -4551,9 +4673,10 @@ function renderQuizTab(body, lesson, quiz) {
   // Starring is a reading choice about THIS bank, so the "only starred" filter
   // lives per lesson and is dropped when another lesson is opened.
   const favCount = quiz.questions.filter((q) => isFav(lesson.id, q)).length;
+  const bankQ = quizQuery.trim().toLowerCase();
   const shown = quiz.questions
     .map((q, i) => ({ q, i }))
-    .filter((x) => !quizFavOnly || isFav(lesson.id, x.q));
+    .filter((x) => (!quizFavOnly || isFav(lesson.id, x.q)) && (!bankQ || questionMatchesQuery(x.q, bankQ)));
   body.innerHTML = `
     <div class="card" style="margin-bottom:18px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
       <div>
@@ -4568,12 +4691,17 @@ function renderQuizTab(body, lesson, quiz) {
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px">
-      <h3 style="margin:0">Question bank (${shown.length})</h3>
+      <h3 style="margin:0">Question bank (${shown.length}${bankQ ? ` / ${quiz.questions.length}` : ""})</h3>
+      <div style="display:flex;align-items:center;gap:6px;flex:1 1 260px;min-width:220px">
+        <input type="search" id="quiz-q" value="${escapeHtml(quizQuery)}" placeholder="🔍 在本课题库内搜索（题干 / 选项 / 解析）"
+          title="输入即筛选本课题目；按 Esc 清空" style="flex:1;min-width:0;padding:6px 10px;border:1.5px solid var(--border);border-radius:9px;font-size:13px">
+      </div>
       <button class="btn btn-ghost btn-sm" id="btn-favonly" title="只显示我收藏的题目"
         ${favCount ? "" : "disabled"}>${quizFavOnly ? "★" : "☆"} 只看收藏 (${favCount})</button>
     </div>
     ${(quiz.userAnswers || []).some((x) => x != null) ? `<p class="sub" style="margin-bottom:10px">✅/❌ 标出的是你上次答过的题（你的选择 + 解析），展开可复习。</p>` : ""}
     ${quizFavOnly && !shown.length ? `<div class="card" style="padding:14px" class="sub">这个课程的收藏题目已被清空或尚未收藏，点题目右上角 ☆ 即可收藏。</div>` : ""}
+    ${bankQ && !shown.length ? `<div class="card" style="padding:14px" class="sub">没有匹配「${escapeHtml(quizQuery.trim())}」的题目。<button class="btn btn-sm btn-ghost" id="quiz-clear-q2" style="margin-left:8px">✕ 清空搜索</button></div>` : ""}
     <div class="grid">${shown.map(({ q, i }) => {
       const ua = quiz.userAnswers?.[i];
       const answered = ua != null && ua !== undefined;
@@ -4595,6 +4723,21 @@ function renderQuizTab(body, lesson, quiz) {
   if (br) br.addEventListener("click", () => quizReviewEnter(currentLessonId));
   const fo = $("#btn-favonly");
   if (fo) fo.addEventListener("click", () => { quizFavOnly = !quizFavOnly; renderLessonDetail(); });
+  // In-lesson bank search. renderQuizTab paints the whole page, so remember that the
+  // box had focus and put the caret back after the re-render.
+  const qBox2 = $("#quiz-q");
+  if (qBox2) {
+    qBox2.addEventListener("input", () => {
+      clearTimeout(quizQueryTimer);
+      quizQueryTimer = setTimeout(() => { quizQuery = qBox2.value; quizQueryRefocus = true; renderLessonDetail(); }, 150);
+    });
+    qBox2.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.preventDefault(); clearTimeout(quizQueryTimer); quizQuery = ""; quizQueryRefocus = true; renderLessonDetail(); }
+    });
+    if (quizQueryRefocus) { quizQueryRefocus = false; qBox2.focus(); qBox2.setSelectionRange(qBox2.value.length, qBox2.value.length); }
+  }
+  const cq2 = $("#quiz-clear-q2");
+  if (cq2) cq2.addEventListener("click", () => { quizQuery = ""; quizQueryRefocus = true; renderLessonDetail(); });
   bindFavStars(body, lesson, quiz.questions);
   // Clicking a question in the bank opens it in the preview, at that question.
   body.querySelectorAll("[data-preview-q]").forEach((el) => el.addEventListener("click", (e) => {
@@ -4610,6 +4753,15 @@ function renderQuizTab(body, lesson, quiz) {
  */
 let quizPreview = null; // { lessonId, idx, show }
 let quizFavOnly = false; // question bank filter: show only starred questions
+/* In-lesson search over the question bank. A lecture's bank runs to ~176 questions,
+   so scrolling to one is hopeless; scoped per lesson like the star filter. */
+let quizQuery = "";
+let quizQueryTimer = 0;
+let quizQueryRefocus = false;   // typing re-renders the whole page, so restore focus
+function questionMatchesQuery(q, query) {
+  const hay = [q.question, (q.options || []).join(" "), q.explanation].filter(Boolean).join(" ").toLowerCase();
+  return String(query || "").toLowerCase().split(/\s+/).filter(Boolean).every((tok) => queryTokenHit(hay, tok));
+}
 
 function quizPreviewEnter(lessonId, idx) {
   quizPreview = { lessonId, idx: Math.max(0, idx | 0), show: false };

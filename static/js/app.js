@@ -2411,6 +2411,19 @@ function classifyLesson(lesson, cls) {
 }
 
 let lessonsFolderFilter = ""; // "" all, "__none__" unfiled, else folder id
+// The Lessons-page search box. Kept in memory (like the folder filter) so opening a
+// lesson and coming back leaves the filter in place, but a reload starts clean.
+let lessonsQuery = "";
+let lessonsQueryTimer = 0;
+/* Match a lesson against that query. Every whitespace-separated token has to appear
+   somewhere in the title, the original file name or the folder name, so a student can
+   search by course code ("HIS28"), by topic ("white cell") or by whatever the lecturer
+   called the file ("Slides"). */
+function lessonMatchesQuery(l, q) {
+  const folder = (currentFolders.find((f) => f.id === l.folderId) || {}).name || "";
+  const hay = [l.title, l.filename, folder].filter(Boolean).join(" ").toLowerCase();
+  return String(q || "").toLowerCase().split(/\s+/).filter(Boolean).every((t) => hay.includes(t));
+}
 // Course-code groups the student chose to hide on the Lessons page (e.g. keep
 // only HNS visible while revising neuro). Persisted per browser.
 let hiddenGroups = new Set();
@@ -2525,6 +2538,8 @@ async function renderLessons() {
   // Active folder filter ("" all, "__none__" unfiled, else a folder id).
   if (lessonsFolderFilter === "__none__") lessonsWith = lessonsWith.filter((l) => !l.folderId);
   else if (lessonsFolderFilter) lessonsWith = lessonsWith.filter((l) => l.folderId === lessonsFolderFilter);
+  const totalLessons = lessonsWith.length;         // before the search box narrows it
+  if (lessonsQuery.trim()) lessonsWith = lessonsWith.filter((l) => lessonMatchesQuery(l, lessonsQuery));
   const sorted = [...lessonsWith].sort((a, b) => b.createdAt - a.createdAt);
   const groups = new Map(); // groupKey -> {label, items}
   for (const l of sorted) {
@@ -2588,9 +2603,15 @@ async function renderLessons() {
   };
   const rl = renderList();
   const missingCount = items.filter((x) => x.type === "lesson" && !(x.l.points || []).length).length;
+  // Typing in the search box re-renders this page (every other filter and section has
+  // to stay consistent), which replaces the input element — remember whether it had
+  // focus so typing is not interrupted after the first character.
+  const queryHadFocus = document.activeElement && document.activeElement.id === "lesson-q";
   $("#view").innerHTML = `
     <div class="page-head">
-      <div class="title-wrap"><h1>Lessons</h1><p class="sub">Everything you've studied, grouped by course code. ${items.filter((x) => x.type === "lesson").length} lessons total.</p></div>
+      <div class="title-wrap"><h1>Lessons</h1><p class="sub">${lessonsQuery.trim()
+        ? `Matching “${escapeHtml(lessonsQuery.trim())}”: ${lessonsWith.length} of ${totalLessons} lesson${totalLessons === 1 ? "" : "s"}${lessonsFolderFilter ? " in this folder" : ""}.`
+        : `Everything you've studied, grouped by course code. ${items.filter((x) => x.type === "lesson").length} lessons total.`}</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         ${missingCount ? `<button class="btn btn-accent" id="btn-gen-missing" title="为所有还没提炼知识点的课一键生成笔记">📝 一键生成未生成的笔记 (${missingCount})</button>` : ""}
         <button class="btn btn-sm btn-ghost" id="btn-reclassify-all" title="用新的分类规则重新整理所有课程的知识点层级（不重新生成内容，每门约 2 次 AI 调用）">🏷 重排全部分类</button>
@@ -2609,6 +2630,11 @@ async function renderLessons() {
           <button class="chip" data-delfolder="${f.id}" title="删除" style="font-size:12px;padding:4px 7px">✕</button>
         </span>`).join("")}
       </div>
+      <div style="display:flex;align-items:center;gap:4px;flex:1;min-width:210px">
+        <input type="search" id="lesson-q" value="${escapeHtml(lessonsQuery)}" placeholder="🔍 搜索课程：标题 / 文件名 / 课程代码"
+          title="输入即筛选；按 Esc 清空" style="flex:1;min-width:0;padding:7px 10px;border:1.5px solid var(--border);border-radius:9px;font-size:13px">
+        ${lessonsQuery ? `<button class="btn btn-sm btn-ghost" id="btn-clear-q" title="清空搜索">✕</button>` : ""}
+      </div>
       <input type="text" id="new-folder-name" placeholder="新文件夹名" style="flex:1;min-width:130px;padding:7px 10px;border:1.5px solid var(--border);border-radius:9px;font-size:13px">
       <button class="btn btn-sm" id="btn-new-folder">＋ 新建文件夹</button>
       ${lessonsSelectMode ? `
@@ -2625,7 +2651,10 @@ async function renderLessons() {
       ${hiddenOnes.map((g) => `<button class="chip" data-showgroup="${escapeHtml(g.key)}" title="点击恢复显示">${escapeHtml(g.label)} ＋</button>`).join("")}
       <button class="btn btn-sm btn-ghost" id="btn-show-all-groups" style="margin-left:auto">全部显示</button>
     </div>` : ""}
-    <div class="grid">${items.filter((x) => x.type === "lesson").length ? rl.gridHtml : emptyState("📚", hiddenOnes.length ? "所有分组都被隐藏了——用上方的按钮恢复。" : "No lessons yet.")}${rl.moreBtn}</div>
+    <div class="grid">${items.filter((x) => x.type === "lesson").length ? rl.gridHtml
+      : lessonsQuery.trim()
+        ? emptyState("🔍", `没有匹配「${escapeHtml(lessonsQuery.trim())}」的课程。<div style="margin-top:12px"><button class="btn btn-ghost" id="btn-clear-q2">✕ 清空搜索</button></div>`)
+        : emptyState("📚", hiddenOnes.length ? "所有分组都被隐藏了——用上方的按钮恢复。" : "No lessons yet.")}${rl.moreBtn}</div>
   `;
   const genMissing = $("#btn-gen-missing");
   if (genMissing) genMissing.addEventListener("click", () => generateAllMissing());
@@ -2633,6 +2662,23 @@ async function renderLessons() {
   if (rcAll) rcAll.addEventListener("click", () => reclassifyAllLessons());
   $("#btn-upload").addEventListener("click", openUpload);
   $("#btn-newtext").addEventListener("click", () => openCreateText());
+  // ---- Search box ----
+  const qBox = $("#lesson-q");
+  if (qBox) {
+    qBox.addEventListener("input", () => {
+      // Debounced: renderLessons re-reads the quizzes store, and firing that per
+      // keystroke would hammer the server while the student is still typing.
+      clearTimeout(lessonsQueryTimer);
+      lessonsQueryTimer = setTimeout(() => { lessonsQuery = qBox.value; renderLessons(); }, 250);
+    });
+    qBox.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.preventDefault(); clearTimeout(lessonsQueryTimer); lessonsQuery = ""; lessonsQueryTimer = setTimeout(renderLessons, 0); }
+    });
+    if (queryHadFocus) { qBox.focus(); qBox.setSelectionRange(qBox.value.length, qBox.value.length); }
+  }
+  const clearQ = () => { clearTimeout(lessonsQueryTimer); lessonsQuery = ""; renderLessons(); };
+  ["#btn-clear-q", "#btn-clear-q2"].forEach((sel) => { const el = $(sel); if (el) el.addEventListener("click", clearQ); });
+
   // ---- Folder bar handlers ----
   $("#btn-select-mode").addEventListener("click", () => { lessonsSelectMode = !lessonsSelectMode; renderLessons(); });
   $("#view").querySelectorAll(".chip[data-folder]").forEach((c) => c.addEventListener("click", () => { lessonsFolderFilter = c.dataset.folder; renderLessons(); }));

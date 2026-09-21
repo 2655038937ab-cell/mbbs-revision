@@ -742,6 +742,9 @@ function setActivity(a) {
 
 function flushActivity() {
   if (currentActivity && activitySeconds > 1) {
+    // A trial visitor has no account to log study time against, and the write was
+    // rejected with a 401 that only showed up as console noise on the public site.
+    if (api.isTrialMode()) { activitySeconds = 0; return; }
     const sec = Math.round(activitySeconds);
     activitySeconds = 0;
     const date = dayKey(new Date());

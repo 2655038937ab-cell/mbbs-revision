@@ -1208,6 +1208,23 @@ class Handler(BaseHTTPRequestHandler):
     def _gzip_ok(self):
         return "gzip" in (self.headers.get("Accept-Encoding") or "").lower()
 
+    # HEAD support. Without do_HEAD every HEAD request answered 501, which breaks
+    # uptime monitors and health checks (and made deploy/verify.sh claim the assets
+    # were uncompressed). One code path: route HEAD through do_GET and let this
+    # helper drop the body.
+    _head = False
+
+    def _write_body(self, data):
+        if not self._head:
+            self.wfile.write(data)
+
+    def do_HEAD(self):
+        self._head = True
+        try:
+            self.do_GET()
+        finally:
+            self._head = False
+
     def _send_store_bytes(self, etag, body, is_gzip):
         """Send one cached store body, or a 304 when the client already has it."""
         cache_headers = "private, max-age=0, must-revalidate"
@@ -1232,7 +1249,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        self._write_body(body)
 
     def _send_store_json(self, store, params, obj):
         """Encode a whole-store list once, cache the bytes, then send them.
@@ -1274,7 +1291,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
-        self.wfile.write(raw)
+        self._write_body(raw)
 
     def _read_body(self):
         length = int(self.headers.get("Content-Length") or 0)
@@ -1373,7 +1390,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
-        self.wfile.write(content)
+        self._write_body(content)
 
     # ---------- GET ----------
     def do_GET(self):
@@ -1586,7 +1603,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(data)
+            self._write_body(data)
             return
 
         self._serve_static(path)

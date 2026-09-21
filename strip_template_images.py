@@ -103,17 +103,20 @@ def main():
 
     con = sqlite3.connect(db)
     con.row_factory = sqlite3.Row
-    records = [(r["id"], json.loads(r["data"]))
-               for r in con.execute("SELECT id, data FROM records WHERE store='lessonImages'")]
     print("数据目录: %s" % args.data_dir)
-    print("图片记录: %d 门课" % len(records))
 
-    # ---- pass 1: hash every image, count slides-per-lecture and lectures-per-hash
-    per_lesson_counts = {}      # lesson id -> {hash: slides}
+    # ------------------------------------------------------------------ pass A
+    # Stream one lesson at a time and keep only numbers. The first version read
+    # every image record into memory at once — 2.4 GB of JSON on a 2 GB cloud
+    # instance, which thrashed the host into unresponsiveness. Nothing here holds
+    # more than a single lesson plus a few small dicts.
+    per_lesson_counts = {}          # lesson id -> {hash: slides it appears on}
     lessons_of = collections.defaultdict(set)
-    sample_url = {}
+    metrics = {}                    # hash -> (bytes, width/height)
+    lessons = 0
     instances = 0
-    for lid, rec in records:
+    for row in con.execute("SELECT id, data FROM records WHERE store='lessonImages'"):
+        rec = json.loads(row["data"])
         counts = collections.Counter()
         for sl in rec.get("slides") or []:
             seen = set()
@@ -126,54 +129,53 @@ def main():
                     continue
                 seen.add(h)
                 counts[h] += 1
-                lessons_of[h].add(lid)
-                sample_url.setdefault(h, im["dataUrl"])
-        per_lesson_counts[lid] = counts
+                lessons_of[h].add(row["id"])
+                if h not in metrics:
+                    metrics[h] = image_metrics(im["dataUrl"])
+        per_lesson_counts[row["id"]] = counts
+        lessons += 1
+    print("图片记录: %d 门课；图片实例 %d 个；去重 %d 张" % (lessons, instances, len(metrics)))
+    candidates = sum(1 for h, ls in lessons_of.items() if len(ls) >= LOGO_MIN_LESSONS)
+    print("跨 >=%d 门课重复的候选: %d 张" % (LOGO_MIN_LESSONS, candidates))
 
-    # ---- pass 2: decode only the candidates (cheap: a few hundred of 20k+)
-    candidates = {h for h, n in lessons_of.items() if len(n) >= LOGO_MIN_LESSONS}
-    metrics = {h: image_metrics(sample_url[h]) for h in candidates}
-    print("图片实例 %d 个；跨 ≥%d 门课重复的候选 %d 张"
-          % (instances, LOGO_MIN_LESSONS, len(candidates)))
-
-    # ---- pass 3: apply the rules
-    changes, reasons = [], collections.Counter()
-    seen_change = set()
-    for lid, rec in records:
+    # ------------------------------------------------------------------ pass B
+    changes = []
+    reasons = collections.Counter()
+    touched = collections.Counter()
+    for row in con.execute("SELECT id, data FROM records WHERE store='lessonImages'"):
+        lid = row["id"]
+        rec = json.loads(row["data"])
         n_slides = len(rec.get("slides") or [])
         if n_slides < 2:
             continue
         repeat_threshold = max(3, int(n_slides * 0.3))
         heavy_threshold = max(3, int(n_slides * 0.5))
-        counts = per_lesson_counts[lid]
+        counts = per_lesson_counts.get(lid, {})
+        dirty = False
         for si, sl in enumerate(rec.get("slides") or []):
             for im in sl.get("images") or []:
-                if not isinstance(im, dict) or im.get("kind") == "page" or not im.get("dataUrl"):
-                    continue
-                if im.get("kind") == "logo":
+                if not isinstance(im, dict) or im.get("kind") in ("page", "logo") or not im.get("dataUrl"):
                     continue
                 h = hashlib.sha1(im["dataUrl"].encode("utf-8")).hexdigest()
                 repeats = counts.get(h, 0)
-                nbytes, aspect = metrics.get(h, image_metrics(im["dataUrl"]))
+                nbytes, aspect = metrics.get(h) or image_metrics(im["dataUrl"])
                 small_or_strip = (0 < nbytes <= LOGO_MAX_BYTES) or aspect >= LOGO_MIN_ASPECT
-                why = None
                 if repeats >= heavy_threshold:
-                    why = "A 本课 ≥50% 页出现"
+                    why = "A 本课 >=50% 页出现"
                 elif repeats >= repeat_threshold and small_or_strip:
-                    why = "B 本课 ≥30% 页 + 小图/横条"
+                    why = "B 本课 >=30% 页 + 小图/横条"
                 elif len(lessons_of[h]) >= LOGO_MIN_LESSONS and (small_or_strip or repeats >= 2):
                     why = "D 跨 %d 门课重复 + 小图/横条" % len(lessons_of[h])
-                if not why:
+                else:
                     continue
-                key = (lid, si, im.get("name"))
-                if key in seen_change:
-                    continue
-                seen_change.add(key)
                 im["kind"] = "logo"
+                dirty = True
                 changes.append({"lessonId": lid, "slide": si, "name": im.get("name"),
                                 "hash": h[:12], "bytes": nbytes, "aspect": round(aspect, 2),
                                 "lectures": len(lessons_of[h]), "slidesHere": repeats, "why": why})
                 reasons[why.split()[0]] += 1
+        if dirty:
+            touched[lid] = rec
 
     print("将标记为 logo 的图片: %d 个实例" % len(changes))
     for k in sorted(reasons):
@@ -183,12 +185,13 @@ def main():
         return
     if args.list:
         for ch in changes[:400]:
-            print("  [%s] %s  %d KB  %sx  %d 门课  第 %d 页  %s"
-                  % (ch["why"], ch["hash"], ch["bytes"] // 1024, ch["aspect"], ch["lectures"], ch["slide"], ch["name"]))
+            print("  [%s] %s  %d KB  宽高比 %.2f  %d 门课  第 %d 页  %s"
+                  % (ch["why"], ch["hash"], ch["bytes"] // 1024, ch["aspect"],
+                     ch["lectures"], ch["slide"], ch["name"]))
     else:
         print("\n样例:")
         for ch in changes[:8]:
-            print("  %-28s %5dKB 宽高比%4.2f  %2d 门课重复  第 %d 页"
+            print("  %-14s %5dKB 宽高比%5.2f  %2d 门课重复  第 %d 页"
                   % (ch["hash"], ch["bytes"] // 1024, ch["aspect"], ch["lectures"], ch["slide"]))
 
     if not args.apply:
@@ -202,11 +205,9 @@ def main():
                    "changes": changes}, fh, ensure_ascii=False, indent=1)
     print("\n变更记录: %s（%d 条，含原 kind，可逐条还原）" % (log, len(changes)))
 
-    touched = {c["lessonId"] for c in changes}
-    for lid, rec in records:
-        if lid in touched:
-            con.execute("UPDATE records SET data=? WHERE store='lessonImages' AND id=?",
-                        (json.dumps(rec, ensure_ascii=False, separators=(",", ":")), lid))
+    for lid, rec in touched.items():
+        con.execute("UPDATE records SET data=? WHERE store='lessonImages' AND id=?",
+                    (json.dumps(rec, ensure_ascii=False, separators=(",", ":")), lid))
     con.commit()
 
     # Rebuild the server's cross-lecture index so future uploads are recognised too.

@@ -728,6 +728,74 @@ def lighten_lesson(rec):
     return out
 
 
+# ---------------------------------------------------------------- page furniture
+# A school logo is not repeated often enough inside one lecture to trip the
+# "appears on half the slides" rule, but it is the SAME image in every lecture, so
+# the reliable signal is cross-lesson repetition. The sizes separate cleanly in the
+# real library: the crest is 411x246 / ~11 KB and the letterhead strip is 1167x292 /
+# 44 KB, while genuine diagrams are large and near-square.
+LOGO_MAX_BYTES = 64 * 1024     # small image
+LOGO_MIN_ASPECT = 2.5          # very wide and short (header/footer strip)
+LOGO_MIN_LESSONS = 3           # seen in this many lectures -> page furniture
+
+
+def _image_metrics(data_url):
+    """(decoded bytes, width/height) of a data URL, read straight from the image
+    header. Returns (0, 1.0) when it cannot be parsed."""
+    try:
+        raw = base64.b64decode(data_url.split(",", 1)[-1])
+    except Exception:                                            # noqa: BLE001
+        return 0, 1.0
+    n = len(raw)
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return n, ((raw[16] << 24 | raw[17] << 16 | raw[18] << 8 | raw[19]) /
+                   max(1, (raw[20] << 24 | raw[21] << 16 | raw[22] << 8 | raw[23])))
+    if raw[:2] == b"\xff\xd8":                                   # JPEG: walk to SOF
+        i = 2
+        while i < n - 9:
+            if raw[i] != 0xFF:
+                i += 1
+                continue
+            m = raw[i + 1]
+            if m in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                h = (raw[i + 5] << 8) | raw[i + 6]
+                w = (raw[i + 7] << 8) | raw[i + 8]
+                return n, (w / max(1, h))
+            if m in (0xD8, 0xD9) or 0xD0 <= m <= 0xD7:
+                i += 2
+                continue
+            i += 2 + ((raw[i + 2] << 8) | raw[i + 3])
+    return n, 1.0
+
+
+IMAGE_INDEX_PATH = os.path.join(DATA_DIR, "image-index.json")
+_IMAGE_INDEX = None
+
+
+def image_index():
+    """hash -> number of lectures this exact image has appeared in."""
+    global _IMAGE_INDEX
+    if _IMAGE_INDEX is None:
+        try:
+            with open(IMAGE_INDEX_PATH, "r", encoding="utf-8") as fh:
+                _IMAGE_INDEX = json.load(fh)
+        except (OSError, ValueError):
+            _IMAGE_INDEX = {}
+    return _IMAGE_INDEX
+
+
+def remember_image_hashes(hashes):
+    """Count this lecture's images into the index (each hash once per lecture)."""
+    idx = image_index()
+    for h in hashes:
+        idx[h] = int(idx.get(h, 0)) + 1
+    try:
+        with open(IMAGE_INDEX_PATH, "w", encoding="utf-8") as fh:
+            json.dump(idx, fh)
+    except OSError:
+        pass
+
+
 def _is_top_right(im):
     """True if the image is a small box in the top-right corner.
 
@@ -762,6 +830,7 @@ def _mark_logos(parsed):
         return parsed
     repeat_threshold = max(3, int(n * 0.3))
     heavy_threshold = max(3, int(n * 0.5))
+    glob = image_index()
     counts = {}
     for s in slides:
         seen = set()
@@ -773,13 +842,25 @@ def _mark_logos(parsed):
                 continue
             seen.add(h)
             counts[h] = counts.get(h, 0) + 1
+    metrics = {}
     for s in slides:
         for im in s.get("images") or []:
             if not isinstance(im, dict) or im.get("kind") == "page" or not im.get("dataUrl"):
                 continue
             h = hashlib.sha1(im["dataUrl"].encode("utf-8")).hexdigest()
             repeats = counts.get(h, 0)
-            if repeats >= heavy_threshold or (repeats >= repeat_threshold and _is_top_right(im)):
+            if h not in metrics:
+                metrics[h] = _image_metrics(im["dataUrl"])
+            nbytes, aspect = metrics[h]
+            small_or_strip = (0 < nbytes <= LOGO_MAX_BYTES) or aspect >= LOGO_MIN_ASPECT
+            if repeats >= heavy_threshold:
+                im["kind"] = "logo"                     # on half this lecture's slides
+            elif repeats >= repeat_threshold and small_or_strip:
+                im["kind"] = "logo"                     # on a third of them, and a strip/crest
+            elif repeats >= repeat_threshold and _is_top_right(im):
+                im["kind"] = "logo"
+            elif glob.get(h, 0) + 1 >= LOGO_MIN_LESSONS and (small_or_strip or repeats >= 2):
+                # The real tell for a logo: the same bytes show up in several lectures.
                 im["kind"] = "logo"
     return parsed
 
@@ -1725,6 +1806,14 @@ class Handler(BaseHTTPRequestHandler):
             result["kind"] = kind
             result["filename"] = filename
             result = _mark_logos(result)
+            # Count this lecture's images into the cross-lesson index so the NEXT
+            # upload of the same crest/letterhead is recognised on sight.
+            remember_image_hashes({
+                hashlib.sha1(im["dataUrl"].encode("utf-8")).hexdigest()
+                for sl in (result.get("slides") or [])
+                for im in (sl.get("images") or [])
+                if isinstance(im, dict) and im.get("dataUrl") and im.get("kind") != "page"
+            })
             self._send_json(result)
             return
 

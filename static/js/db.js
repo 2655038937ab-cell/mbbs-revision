@@ -10,6 +10,22 @@ async function j(resp) {
   return data;
 }
 
+// Records that came back from a list-only (lite) or slimmed endpoint. Those
+// endpoints deliberately omit fields — point explanations, keyTerms,
+// supplements, figure captions, the outline, slide text — so saving one of them
+// back would delete that content for good. That is not hypothetical: a folder
+// edit once wrote a lite lesson back and wiped a whole lesson's explanations,
+// captions and slide text. Anything loaded through getAllLite/getLight/…
+// is remembered here and refused by put(), so the mistake fails loudly and
+// immediately instead of quietly destroying data.
+const _partialRecords = new WeakSet();
+
+export function markPartial(records) {
+  const list = Array.isArray(records) ? records : [records];
+  for (const r of list) if (r && typeof r === "object") _partialRecords.add(r);
+  return records;
+}
+
 // In-memory cache for list endpoints so fast page switching doesn't re-fetch
 // and re-parse the large lessons/cards stores on every navigation.
 const _listCache = new Map();
@@ -25,6 +41,12 @@ function _thawCache(store) {
 
 export const db = {
   async put(store, value) {
+    if (value && typeof value === "object" && _partialRecords.has(value)) {
+      const err = new Error(`refusing to save a list-only record of "${store}" (id ${value.id}): `
+        + "it is missing fields the list endpoint never sent. Load it with db.get() first.");
+      console.error(err.message);
+      throw err;
+    }
     _freeCache(store);
     await j(await authedFetch(`/api/store/${store}/${encodeURIComponent(value.id)}`, {
       method: "PUT",
@@ -57,13 +79,16 @@ export const db = {
     // Single light lesson (no image payloads) for flows that only touch
     // points/text, e.g. the Feynman self-test.
     const d = await j(await authedFetch(`/api/store/${store}/${encodeURIComponent(id)}?light=1`));
-    return d.item ?? null;
+    return d.item ? markPartial(d.item) : null;
   },
   async getAll(store) {
     const hit = _thawCache(store);
     if (hit) return hit;
     const d = await j(await authedFetch(`/api/store/${store}`));
-    const items = d.items || [];
+    // The lesson list is slimmed server-side even without ?lite=1 (it drops figure
+    // captions, the outline, notes, keyTerms and supplements), so those records are
+    // partial too and must never be written back.
+    const items = store === "lessons" ? markPartial(d.items || []) : (d.items || []);
     _listCache.set(store, items);
     _listT.set(store, Date.now());
     return items;
@@ -79,7 +104,7 @@ export const db = {
     const hit = _thawCache(key);
     if (hit) return hit;
     const d = await j(await authedFetch(`/api/store/${store}?lite=1`));
-    const items = d.items || [];
+    const items = markPartial(d.items || []);
     _listCache.set(key, items);
     _listT.set(key, Date.now());
     return items;

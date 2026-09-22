@@ -2829,7 +2829,15 @@ async function renderLessons() {
     if (!confirm("删除这个文件夹？（里面的课会变成未分类）")) return;
     await db.delete("folders", c.dataset.delfolder);
     const ls = await db.getAllLite("lessons");
-    for (const l of ls) if (l.folderId === c.dataset.delfolder) { l.folderId = null; await db.put("lessons", l); }
+    // `ls` is a list-only (lite) copy: saving it back would drop the lesson's
+    // explanations, captions, outline and slide text. Re-read each lesson full
+    // before touching it.
+    for (const l of ls) if (l.folderId === c.dataset.delfolder) {
+      const full = await db.get("lessons", l.id);
+      if (!full) continue;
+      full.folderId = null;
+      await db.put("lessons", full);
+    }
     if (lessonsFolderFilter === c.dataset.delfolder) lessonsFolderFilter = "";
     toast("文件夹已删除 ✓", "success");
     renderLessons();
@@ -2849,8 +2857,11 @@ async function renderLessons() {
       const targetId = btn.dataset.target === "__none__" ? null : btn.dataset.target;
       let done = 0;
       for (const id of [...lessonsSelection]) {
-        const l = lessons.find((x) => x.id === id);
-        if (l) { l.folderId = targetId; await db.put("lessons", l); done++; }
+        // `lessons` is the list-only (lite) array, so re-read the full record:
+        // writing a lite lesson back deletes its explanations, captions, outline
+        // and slide text.
+        const full = await db.get("lessons", id).catch(() => null);
+        if (full) { full.folderId = targetId; await db.put("lessons", full); done++; }
       }
       lessonsSelection.clear();
       closeModal();

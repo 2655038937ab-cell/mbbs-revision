@@ -371,6 +371,7 @@ details.mm-details[open] .mm-arrow { transform: rotate(90deg); }
   box-shadow: var(--shadow); font-size: 14px; max-width: 360px; animation: slideIn .2s ease;
 }
 .toast.error { background: var(--red); }
+.toast.warn { background: var(--amber); }
 .toast.success { background: var(--green); }
 @keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 

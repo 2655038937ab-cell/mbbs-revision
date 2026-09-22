@@ -5885,15 +5885,25 @@ async function saveParsedLesson(res, filename, silent = false, autoGen = false, 
   if (opts.brief) lesson.brief = opts.brief;
   if (opts.pageRange) lesson.pageRange = opts.pageRange;
   if (Array.isArray(opts.sources) && opts.sources.length > 1) lesson.sources = opts.sources;
+  // Media the parser could not turn into anything a browser can draw (vector
+  // metafiles with no recoverable bitmap, TIFF, ...). Kept on the lesson so the
+  // student is told a figure is missing instead of silently losing one.
+  const skipped = Array.isArray(res.skippedImages) ? res.skippedImages.filter(Boolean) : [];
+  if (skipped.length) lesson.skippedImages = skipped;
   await db.put("lessons", lesson);
   fullLessonCache.set(lesson.id, lesson);
-  toast("Lesson saved ✓");
+  if (skipped.length) {
+    toast(`${skipped.length} figure${skipped.length > 1 ? "s" : ""} in this file could not be displayed and ${skipped.length > 1 ? "were" : "was"} skipped`, "warn");
+  } else {
+    toast("Lesson saved ✓");
+  }
   if (autoGen) { generateStudySet(lesson.id); return lesson.id; }  // auto-generate, no modal
   if (silent) return lesson.id; // batch upload: don't pop the "generate?" modal per file
   // Ask whether to generate now
   openModal(`
     <h2>Lesson imported</h2>
     <p>“${escapeHtml(title)}” — ${lesson.slides.length} slides parsed.</p>
+    ${skipped.length ? `<p class="sub">⚠️ ${skipped.length} figure${skipped.length > 1 ? "s" : ""} in this file (${escapeHtml(skipped.slice(0, 4).join(", "))}${skipped.length > 4 ? " …" : ""}) is in a format a browser cannot display, so ${skipped.length > 1 ? "they were" : "it was"} left out — the slides themselves are unaffected.</p>` : ""}
     <p class="sub">Next, let AI distill the key points, flashcards, quiz questions and figure captions.</p>
     <div style="display:flex;gap:10px;margin-top:18px">
       <button class="btn btn-accent" id="go-gen">✨ Generate study set</button>

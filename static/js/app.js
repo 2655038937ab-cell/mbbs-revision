@@ -1199,12 +1199,15 @@ Cover everything the slides present, with particular attention to: ${(subject &&
 
 SKIP ATTRIBUTION AND PRIORITY TRIVIA. Do NOT create a point out of who discovered, proposed or first described something, the year it happened, the journal or textbook it appeared in, or a prize it won — these come from the slides' history and reference sections and are not knowledge a student needs. A knowledge point must be something the student has to UNDERSTAND or be able to APPLY. The only exception is when the slide treats the attribution itself as core examinable content. Aim for 2-4 points per CONTENT slide (fewer on a thin slide, and none at all on a structure slide — see below); a single named entity, quantity or mechanism discussed on one slide deserves its OWN point. Prefer MORE, finer points over summarizing or collapsing.
 
-STRUCTURE SLIDES ARE NOT CONTENT — do not mine them for points. An outline, agenda, "Part List"/"Behavior List", "what we will cover", lecture roadmap, recap or summary, overview-of-techniques, "Any questions?", title, section-divider, acknowledgement or reference/citation slide only LISTS what is coming or what has passed; it does not teach it. On those slides:
+STRUCTURE AND BACK-MATTER SLIDES ARE NOT CONTENT — do not mine them for points. An outline, agenda, "Part List"/"Behavior List", "what we will cover", lecture roadmap, recap / summary / 小结 / 总结 / 本章要点, overview-of-techniques, "Any questions?", title, section-divider, acknowledgement, 思考题 / 练习题 / 习题 / 讨论题 / 作业 page, or 推荐阅读 / reference / citation list only LISTS what is coming, what has passed, what to think about or what to read; it does not teach it. On those slides:
   - A topic that appears only as a bullet gets NO point, however much you know about it. Never expand such a bullet into an explanation of your own.
+  - A QUESTION IS NOT KNOWLEDGE: never return a point whose title is a question or an exercise ("思考题1：…", "练习3：…"). If the answer is worth knowing, the page that TEACHES it has already produced that point.
+  - Never return a citation or reading suggestion as a point ("推荐阅读：…", "Hodgkin & Huxley 1952 …").
+  - A SUMMARY PAGE IS THE BIGGEST TRAP: it restates conclusions you have already extracted from the pages it summarises. Extract nothing from it. If it genuinely states one NEW thing — an exception, a comparison or a number that appears nowhere else — that single statement may become ONE point; never re-list its bullets, and never split its summary table into one point per row.
   - Why this matters: a point written off an outline bullet is filed under the OUTLINE's page number, which drags a whole block of the lecture to the front of the reading order and leaves the slides that actually teach that topic referenced by nobody.
   - Every point must come from the slide that teaches it, and carry THAT slide's number.
 
-MANDATORY completeness — account for every CONTENT slide and surface EVERY named concrete entity the text mentions: if a specific item is named (a molecule, pathway, technique, model, theorem, experiment, researcher or organism), give it its OWN point with what the slides say about it; if a content slide explains several such items, each gets its own point. Do NOT only give conceptual overviews while skipping named entities — those are what a student must memorise. Return JSON {"points":[...]} with every point found.
+MANDATORY completeness — account for every CONTENT slide and surface EVERY named concrete entity the text mentions: if a specific item is named (a molecule, pathway, technique, model, theorem, experiment, organism, drug, structure or disease), give it its OWN point with what the slides say about it; if a content slide explains several such items, each gets its own point. Do NOT only give conceptual overviews while skipping named entities — those are what a student must memorise. A PERSON'S NAME IS NOT SUCH AN ENTITY: who discovered, described or won a prize for something is covered by the rule above and never becomes a point of its own (a model or technique named after its discoverers, e.g. the Hodgkin-Huxley model, is a concept and does count). Return JSON {"points":[...]} with every point found.
 
 ${outline ? `LECTURE STRUCTURE — these are the ONLY valid level-1 topics:
 ${outline}
@@ -1262,7 +1265,7 @@ ${languageReminder()}
 
 Focus on the same dimensions as the main extraction: ${(subject && subject.focus) || "core concepts, mechanisms, key facts and quantities"}.${briefBlock(brief)}
 
-Fill gaps ONLY from slides that actually teach something. Never add a point for a topic that appears merely as a bullet on an outline / agenda / recap / overview-of-techniques / title / reference slide — those lists are not content, and a point filed under such a page pushes a block of the lecture out of reading order. Each added point must carry the number of the slide that teaches it.
+Fill gaps ONLY from slides that actually teach something. Never add a point for a topic that appears merely as a bullet on an outline / agenda / recap / summary (小结) / overview-of-techniques / title / reference slide — those lists are not content, and a point filed under such a page pushes a block of the lecture out of reading order. The same holds for 思考题 / 练习题 / 习题 / 讨论题 pages (a question is not a knowledge point — if the answer matters, the page that teaches it is the one to extract from) and for 推荐阅读 / citation lists. A page with neither text nor a figure caption has nothing to extract: skip it rather than guessing from the image. Each added point must carry the number of the slide that teaches it.
 
 Already extracted points (titles): ${titles}
 
@@ -1742,6 +1745,15 @@ Based on the slide text, infer what each figure most likely shows (one entry per
 
 Return JSON: {"figures":[{"caption":"...","takeaway":"..."}]} — exactly ${n} entries.`;
 
+/* For a slide with no usable text (an image-only deck), the text model has nothing to
+ * work from — asking it anyway is how a lesson ended up captioned as a different topic
+ * entirely. Send the picture to the vision model instead. */
+const figureCaptionVisionPrompt = () => `Describe the figure in this medical lecture slide from what you can SEE.
+- "caption": one sentence saying what the figure actually depicts
+- "takeaway": the key medical point to remember from it
+Use the exact wording of any labels or text that appear in the image. If you cannot tell what it shows, say so plainly — never invent a topic that the image does not contain.
+Return JSON: {"figures":[{"caption":"...","takeaway":"..."}]} — exactly 1 entry.`;
+
 // Batched version: answer captions for several slides in ONE call (many fewer
 // round-trips than one call per slide, which dominated generation time).
 const figureCaptionBatchPrompt = (slides) => `Below are ${slides.length} lecture slide(s), each containing 1–4 figures (diagrams/images). For every slide, infer from its text what each figure most likely shows. One entry per figure, in order.
@@ -1779,12 +1791,27 @@ async function attachFigureCaptions(slides, pm, opts = {}) {
       const figs = (slide.images || []).filter((im) => im.kind !== "page" && im.kind !== "logo").slice(0, 4);
       return { index: slide.index, text: slide.text || "", n: figs.length, figs };
     });
-    // Never ask the TEXT model to imagine a figure: with no slide text (an image-only
-    // deck whose OCR was skipped) it invents a topic, and those captions are then
-    // treated as the slide's content by the points prompt. Slides that still have no
-    // text after OCR are left without captions instead.
-    const reqItems = items.filter((it) => it.n > 0 && String(it.text || "").trim().length >= 20)
+    // Split by whether there is text to reason from. A slide with no text cannot be
+    // captioned by the text model — it would invent a topic (that is exactly how a
+    // muscle lesson got captioned as upper-limb vessels) — so those figures go to the
+    // vision model, which looks at the picture itself.
+    const need = items.filter((it) => it.n > 0)
       .filter((it) => !onlyMissing || it.figs.some((im) => !im.caption || !(im.caption.caption || im.caption.takeaway)));
+    const blind = need.filter((it) => String(it.text || "").trim().length < 20 && it.figs.some((im) => im.dataUrl));
+    const reqItems = need.filter((it) => String(it.text || "").trim().length >= 20);
+    if (blind.length) {
+      await parallelMap(blind, 3, async (it) => {
+        for (const im of it.figs) {
+          if (!im.dataUrl || (pm && pm.isCancelled())) continue;
+          const vr = await api.vision(im.dataUrl, figureCaptionVisionPrompt(), { max_tokens: 500, lessonId: "", lessonTitle: "" });
+          if (vr && vr.usage) pm.addTokens(vr.usage.total_tokens);
+          if (!vr || vr.error) continue;
+          const pv = parseJSON(vr.content);
+          const f0 = pv && Array.isArray(pv.figures) ? pv.figures[0] : null;
+          if (f0) im.caption = { type: "figure", caption: f0.caption || "", takeaway: f0.takeaway || "" };
+        }
+      });
+    }
     if (!reqItems.length) { done += batch.length; return; }
     const r = await api.llm(
       [{ role: "system", content: SYS }, { role: "user", content: figureCaptionBatchPrompt(reqItems) }],
@@ -1852,10 +1879,78 @@ function figureCaptionLines(s) {
   return lines.join("\n");
 }
 
+/* Pages that only summarise, ask questions or list reading.
+ *
+ * The extraction prompt forbids turning these into knowledge points, but a page
+ * of prose full of named entities still tempts the model — a real chapter-end
+ * 小结 produced 23 points, 18 of them restatements of pages already extracted
+ * (measured on 生理学 第三章: 神经纤维分类, 兴奋性定义, Hodgkin循环, 传播机制,
+ * 全或无, and the whole A/B/C fibre table re-listed). The coverage pass then made
+ * it worse: an uncovered 小结 page is a page the pass is told to fill.
+ *
+ * So the rule is enforced here, not only asked for: such a page keeps its number
+ * in the prompt (the model must know it exists and that it is off-limits) but its
+ * text is replaced, and it never counts as an uncovered page.
+ */
+// A heading, optionally introduced by markdown/list marks ("## 推荐阅读", "• 思考题").
+// Deliberately alternating simple character classes rather than nested quantifiers
+// (`(?:[#*]+\s*)*`): that shape backtracks catastrophically on a long slide and
+// froze the scan of a whole library.
+const BACK_MATTER_RE = /(^|\n)[ \t#*\-–—•>]*(小结|本章小结|本章要点|本章总结|总结|复习题|思考题|练习题|习题|讨论题|作业|推荐阅读|参考文献|Summary|Chapter summary|Key points|Review questions|Problems|Further reading|References)[ \t]*[:：]?[ \t]*(\n|$)/i;
+
+/* Where the back matter starts on this page.
+ *   -1  : there is none — the page is ordinary content
+ *    0  : the page IS back matter (drop it whole)
+ *   >0  : real content runs to this offset; everything after it is back matter
+ *
+ * Truncating rather than deleting matters for scanned textbook chapters: one page
+ * often ends with the first lines of the chapter's 小结, and dropping the whole
+ * page would throw away the real content above it.
+ */
+function backMatterCut(slide, totalSlides) {
+  const text = String((slide && slide.text) || "");
+  if (!text) return -1;
+  const m = text.match(BACK_MATTER_RE);
+  if (!m) return -1;
+  // Must look like a heading rather than a passing mention: either near the top of
+  // the page, or on one of the chapter's last pages, where back matter lives.
+  const pos = text.search(BACK_MATTER_RE);
+  const late = Number(slide.index) > (Number(totalSlides) || 0) * 0.72;
+  if (!(pos < 160 || late)) return -1;
+  if (pos < 8) return 0;                 // nothing above the heading at all
+  // The block above a 推荐阅读/参考文献 heading is often the tail of the 思考题 list,
+  // whose own heading sits on the previous page — a page of numbered questions is
+  // still not content (see "A QUESTION IS NOT KNOWLEDGE" in the prompt).
+  const prefix = text.slice(0, pos);
+  const numbered = (prefix.match(/(^|\n)\s*\d+\s*[.、)）]/g) || []).length;
+  const asks = (prefix.match(/[？?]/g) || []).length;
+  if (numbered >= 2 && asks >= 2) return 0;
+  return pos;
+}
+
+function isBackMatterSlide(slide, totalSlides) {
+  return backMatterCut(slide, totalSlides) === 0;
+}
+
 function buildSlideBlocks(slides, opts = {}) {
   const captionsFor = opts.captionsFor || null;
+  const totalSlides = opts.totalSlides || slides.length;
   return slides.map((s) => {
-    let b = `Slide ${s.index}:\n${s.text || "(no text)"}`;
+    const cut = backMatterCut(s, totalSlides);
+    if (cut === 0) {
+      // Keep the page (and its number) visible, but make the content unavailable so
+      // there is nothing to mine. Same wording as the prompt's exclusion rule.
+      return `Slide ${s.index}:\n[back-matter page — summary / questions / reading list. Extract NO knowledge point from this page.]`;
+    }
+    // cut > 0: keep the real content above the heading and mark the rest as
+    // off-limits. Never discard that prefix — on a scanned chapter page it can hold
+    // a definition or a table that appears nowhere else (e.g. the 相/心 definition
+    // on the first AI seminar page, which sits above its 小结 heading).
+    const body = cut > 0
+      ? String(s.text).slice(0, cut)
+        + "\n\n[back-matter from here — summary / questions / reading list. Extract no knowledge point from it, and do not restate points already taken from the pages it summarises.]"
+      : s.text;
+    let b = `Slide ${s.index}:\n${body || "(no text)"}`;
     if (s.notes) b += `\nSpeaker notes: ${s.notes}`;
     const wantCaption = captionsFor
       ? captionsFor.has(Number(s.index))
@@ -6100,7 +6195,11 @@ async function generateStudySet(lessonId, regenerate = false) {
   if (slidesWithFigs.length) {
     pm.addStep(`Read figures & captions (${slidesWithFigs.length} slides)`);
     pm.setStep(step, "running");
-    await attachFigureCaptions(slidesWithFigs, pm, { lo: 0.15, hi: 0.27 });
+    // Refresh captions on a regenerate instead of only filling gaps: a caption made
+    // when the slide had no text (before OCR existed for image-only decks) describes
+    // an invented topic, and onlyMissing would keep it and feed it to the points
+    // prompt again. The comment above still holds for slides whose text never changed.
+    await attachFigureCaptions(slidesWithFigs, pm, { lo: 0.15, hi: 0.27, onlyMissing: !regenerate });
     pm.setStep(step, "done");
     step++;
     // Persist straight away: these captions cost a model call each, so they must
@@ -6109,7 +6208,7 @@ async function generateStudySet(lessonId, regenerate = false) {
   }
 
   // Build slide text AFTER any OCR and captions
-  const blocks = buildSlideBlocks(lesson.slides || []);
+  const blocks = buildSlideBlocks(lesson.slides || [], { totalSlides: (lesson.slides || []).length });
   const chunks = chunkText(blocks, 2800);
 
   // Step — analyze lecture structure (so every point uses a consistent hierarchy)
@@ -6177,7 +6276,8 @@ async function generateStudySet(lessonId, regenerate = false) {
   // point of the lecture a second time with a slightly longer title — the source
   // of the near-duplicated notes that then show up twice in 按讲义顺序.
   const coveredIdx = new Set(newPoints.map((p) => Number(p.slide)).filter((n) => Number.isFinite(n) && n > 0));
-  const uncovered = (lesson.slides || []).filter((s) => !coveredIdx.has(Number(s.index)));
+  const uncovered = (lesson.slides || []).filter((s) => !coveredIdx.has(Number(s.index))
+    && !isBackMatterSlide(s, (lesson.slides || []).length));   // never ask for points on a 小结/思考题/参考文献 page
   const covChunks = uncovered.length
     ? chunkText(buildSlideBlocks(uncovered, { captionsFor: new Set(uncovered.map((s) => Number(s.index))) }), 2800)
     : [];
@@ -6405,13 +6505,17 @@ async function generatePointsOnly(lessonId) {
   if (slidesWithFigs.length) {
     pm.addStep(`Read figures & captions (${slidesWithFigs.length} slides)`);
     pm.setStep(step, "running");
-    await attachFigureCaptions(slidesWithFigs, pm, { lo: 0.15, hi: 0.27 });
+    // Refresh captions on a regenerate instead of only filling gaps: a caption made
+    // when the slide had no text (before OCR existed for image-only decks) describes
+    // an invented topic, and onlyMissing would keep it and feed it to the points
+    // prompt again. The comment above still holds for slides whose text never changed.
+    await attachFigureCaptions(slidesWithFigs, pm, { lo: 0.15, hi: 0.27, onlyMissing: !regenerate });
     pm.setStep(step, "done");
     step++;
     await db.put("lessons", lesson); // keep the captions even if the run is abandoned
   }
 
-  const blocks = buildSlideBlocks(lesson.slides || []);
+  const blocks = buildSlideBlocks(lesson.slides || [], { totalSlides: (lesson.slides || []).length });
   const chunks = chunkText(blocks, 2800);
 
   let outlineText = "";
@@ -6462,7 +6566,8 @@ async function generatePointsOnly(lessonId) {
   // point, with their figure captions attached, so a diagram-only page is not left
   // unreachable from the notes. Re-sending the whole deck here duplicated the notes.
   const coveredIdx = new Set(newPoints.map((p) => Number(p.slide)).filter((n) => Number.isFinite(n) && n > 0));
-  const uncovered = (lesson.slides || []).filter((s) => !coveredIdx.has(Number(s.index)));
+  const uncovered = (lesson.slides || []).filter((s) => !coveredIdx.has(Number(s.index))
+    && !isBackMatterSlide(s, (lesson.slides || []).length));   // never ask for points on a 小结/思考题/参考文献 page
   const covChunks = uncovered.length
     ? chunkText(buildSlideBlocks(uncovered, { captionsFor: new Set(uncovered.map((s) => Number(s.index))) }), 2800)
     : [];

@@ -31,11 +31,25 @@ copy_dir() {   # local dir, remote dir
   local size
   size=$(du -sh "$src" 2>/dev/null | cut -f1)
   echo "==> data $src ($size) -> $dst"
-  if $SSH 'command -v rsync >/dev/null'; then
-    rsync -az --info=progress2 -e "ssh -o ConnectTimeout=15" "$src/" "$TARGET:$dst/"
+
+  # Skip backups and logs: the local data dir carries multi-GB *.bak-* snapshots that
+  # are useless on the new box and would turn an 8-minute move into an hour.
+  local EX=(--exclude='*.bak' --exclude='*.bak-*' --exclude='*-wal' --exclude='*-shm'
+            --exclude='*.log' --exclude='*.log.*' --exclude='dedupe-plan-*.json')
+
+  # rsync only when BOTH ends are rsync 3+. macOS still ships 2.6.9 (2006), which
+  # rejects --info=progress2 and silently turned this step into a no-op, so the default
+  # path here is a tar stream: no version dependency, no resumability but the whole
+  # move is under ten minutes anyway.
+  local rv
+  rv=$(rsync --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+  if [ -n "$rv" ] && [ "${rv%%.*}" -ge 3 ] && $SSH 'command -v rsync >/dev/null'; then
+    echo "    (rsync $rv)"
+    rsync -az --progress "${EX[@]}" -e "ssh -o ConnectTimeout=15" "$src/" "$TARGET:$dst/"
   else
-    echo "    (no rsync on the server, streaming a tar archive)"
-    tar -C "$src" -czf - . | $SSH "tar -xzf - -C $dst"
+    echo "    (no modern rsync here or there — streaming a plain tar archive)"
+    # No -z: the library is 98% JPEG slide images, so compression only burns CPU.
+    tar -C "$src" -cf - "${EX[@]}" . | $SSH "tar -xf - -C $dst"
   fi
 }
 

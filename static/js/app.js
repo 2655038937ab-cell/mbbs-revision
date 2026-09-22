@@ -1779,7 +1779,11 @@ async function attachFigureCaptions(slides, pm, opts = {}) {
       const figs = (slide.images || []).filter((im) => im.kind !== "page" && im.kind !== "logo").slice(0, 4);
       return { index: slide.index, text: slide.text || "", n: figs.length, figs };
     });
-    const reqItems = items.filter((it) => it.n > 0)
+    // Never ask the TEXT model to imagine a figure: with no slide text (an image-only
+    // deck whose OCR was skipped) it invents a topic, and those captions are then
+    // treated as the slide's content by the points prompt. Slides that still have no
+    // text after OCR are left without captions instead.
+    const reqItems = items.filter((it) => it.n > 0 && String(it.text || "").trim().length >= 20)
       .filter((it) => !onlyMissing || it.figs.some((im) => !im.caption || !(im.caption.caption || im.caption.takeaway)));
     if (!reqItems.length) { done += batch.length; return; }
     const r = await api.llm(
@@ -3930,11 +3934,13 @@ function dedupePoints(list) {
     for (let j = i + 1; j < items.length; j++) {
       const a = items[i], b = items[j];
       if (dropped.has(a) || dropped.has(b)) continue;
+      // Same title once normalised -> keep the first. Checked BEFORE the distance
+      // guard: an image-only deck produced "肱动脉走行与分支" on pages 7 and 12, and
+      // skipping it for being far apart left both copies in the lesson.
+      if (a.key === b.key) { dropped.add(b); continue; }
       // Points filed on pages far apart in the deck are different topics, however
       // similar the wording ("钠钾泵的化学计量" vs "钠钾泵的发现与定义").
       if (a.slide && b.slide && Math.abs(a.slide - b.slide) > 2) continue;
-      // Same title once normalised -> keep the first.
-      if (a.key === b.key) { dropped.add(b); continue; }
       // Same-length titles that differ in one or two characters are a contrastive
       // pair — Aα vs Aβ fibres, 谷氨酸 vs 赖氨酸, 细胞 vs 细胞器 level — and those are
       // separate points, not duplicates.
@@ -6048,8 +6054,13 @@ async function generateStudySet(lessonId, regenerate = false) {
   let step = 0;
 
   // Optional step 0 — OCR image-only PDF pages (scanned handouts, no text layer)
+  // Image-only slides need their text read off the image. This used to require an
+  // image tagged kind === "page", which only the PDF parser produces — a PPTX whose
+  // slides are pure pictures therefore skipped OCR entirely, left slide.text empty,
+  // and the caption step then had to GUESS what each figure showed (it invented a
+  // whole different topic, which then poisoned the points, cards and quiz).
   const scanned = (lesson.slides || []).filter(
-    (s) => !s.text && (s.images || []).some((im) => im.kind === "page")
+    (s) => !s.text && (s.images || []).some((im) => im.dataUrl && im.kind !== "logo")
   );
   if (scanned.length) {
     if (hasVision) {
@@ -6058,7 +6069,11 @@ async function generateStudySet(lessonId, regenerate = false) {
       let ocrDone = 0;
       await parallelMap(scanned, 8, async (s) => {
         if (pm.isCancelled()) return;
-        const img = (s.images || []).find((im) => im.kind === "page");
+        // Prefer the whole-page render; a PPTX has no such tag, so fall back to the
+        // largest image on the slide (that is the slide picture).
+        const img = (s.images || []).find((im) => im.kind === "page")
+          || (s.images || []).filter((im) => im.dataUrl && im.kind !== "logo")
+               .sort((a, b) => (b.dataUrl || "").length - (a.dataUrl || "").length)[0];
         const r = await api.vision(img.dataUrl, ocrPrompt);
       if (r && r.usage) pm.addTokens(r.usage.total_tokens);
         if (!r.error) { const p = parseJSON(r.content); if (p?.text) s.text = (s.text ? s.text + "\n" : "") + p.text; }
@@ -6353,7 +6368,9 @@ async function generatePointsOnly(lessonId) {
   let step = 0;
 
   // OCR (optional)
-  const scanned = (lesson.slides || []).filter((s) => !s.text && (s.images || []).some((im) => im.kind === "page"));
+  const scanned = (lesson.slides || []).filter(
+    (s) => !s.text && (s.images || []).some((im) => im.dataUrl && im.kind !== "logo")
+  );
   if (scanned.length) {
     if (cfg.has_vision_key) {
       pm.addStep(`OCR ${scanned.length} image-only page${scanned.length > 1 ? "s" : ""} (vision)`);
@@ -6361,7 +6378,11 @@ async function generatePointsOnly(lessonId) {
       let ocrDone = 0;
       await parallelMap(scanned, 8, async (s) => {
         if (pm.isCancelled()) return;
-        const img = (s.images || []).find((im) => im.kind === "page");
+        // Prefer the whole-page render; a PPTX has no such tag, so fall back to the
+        // largest image on the slide (that is the slide picture).
+        const img = (s.images || []).find((im) => im.kind === "page")
+          || (s.images || []).filter((im) => im.dataUrl && im.kind !== "logo")
+               .sort((a, b) => (b.dataUrl || "").length - (a.dataUrl || "").length)[0];
         const r = await api.vision(img.dataUrl, ocrPrompt);
       if (r && r.usage) pm.addTokens(r.usage.total_tokens);
         if (!r.error) { const p = parseJSON(r.content); if (p?.text) s.text = (s.text ? s.text + "\n" : "") + p.text; }

@@ -228,11 +228,15 @@ def pair_verdict(a, b, bag_a, bag_b):
     if not na or not nb:
         return None
     sa, sb = slide_num(a), slide_num(b)
-    if sa is not None and sb is not None and abs(sa - sb) > 2:
-        return None                      # far apart in the lecture: not a copy
+    far = sa is not None and sb is not None and abs(sa - sb) > 2
 
     if na == nb:
-        return (b, a, "标题归一化后相同")
+        # The same title is the same point wherever it was filed. This used to sit
+        # below the distance guard, so an image-only deck that produced "肱动脉走行与分支"
+        # on pages 7 and 12 kept both copies. R1 is exact, so distance is irrelevant.
+        return _safe(b, a, "标题完全相同" + ("（相隔 %d 页）" % abs(sa - sb) if far else ""))
+    if far:
+        return None                      # far apart in the lecture: not a copy
 
     sim = cos(bag_a, bag_b)
     contrastive = near_identical_titles(na, nb)

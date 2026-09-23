@@ -8169,6 +8169,29 @@ function lessonsFullyDone(lessons, chunks, chunkIds, doneSet) {
 // Shape one raw model record into the stored formula shape. `pointIndex` maps a
 // knowledge-point title to its lesson+index, turning the model's verbatim "point"
 // answer into a clickable source link.
+// Point-title lookup for a formula's recorded source. The model echoes the point
+// title it used, but not always byte-for-byte — an added gloss, full-width
+// brackets or a stray space used to lose the link, and a formula without src shows
+// up in the library with no chapter. Exact first, then the same normalisation the
+// dedupe uses, then containment.
+function pointForTitle(pointIndex, title) {
+  if (!pointIndex || !pointIndex.size) return null;
+  const raw = String(title || "").trim();
+  if (!raw) return null;
+  const exact = pointIndex.get(raw);
+  if (exact) return exact;
+  const want = normPointTitle(raw);
+  if (!want) return null;
+  let contains = null;
+  for (const [t, v] of pointIndex) {
+    const have = normPointTitle(t);
+    if (!have) continue;
+    if (have === want) return v;
+    if (!contains && (have.includes(want) || want.includes(have))) contains = v;
+  }
+  return contains;
+}
+
 function cleanFormula(f, pointIndex) {
   const eq = f && f.examQuestion;
   return {
@@ -8191,7 +8214,11 @@ function cleanFormula(f, pointIndex) {
       answer: asText(eq.answer),
       point: asText(eq.point),
     } : null,
-    src: (pointIndex && pointIndex.get(asText(f.point))) || null,
+    // The model echoes the point title it used, but not always byte-for-byte:
+    // full-width brackets, an added "（…）" gloss or a trailing space used to lose
+    // the link, and a formula with no src shows up in the library with no chapter.
+    // Match exactly first, then on a normalised form, then on containment.
+    src: pointForTitle(pointIndex, asText(f.point)),
     // Coefficient-by-coefficient explanation. Kept as structured records, not one
     // blob, so the card can label 含义/会因何改变/量级 separately.
     params: Array.isArray(f.params) ? f.params.map((p) => ({
@@ -8504,6 +8531,29 @@ async function renderFormulas() {
   const allLessons = await db.getAll("lessons").catch(() => []);
   const docs = await db.getAll("formulas").catch(() => []);
   const docById = new Map((docs || []).map((d) => [d.subjectId, d]));
+  // Which subject a formula belongs to is decided by the COURSE it came from, not by
+  // the document it happens to be stored in. Re-classifying a course (the subject
+  // dropdown on the lesson page) must move its formulas with it — otherwise the
+  // library keeps listing a course under a subject the course list no longer uses,
+  // and re-extracting just to fix a label would cost real tokens. A formula with no
+  // source lesson keeps its document's subject.
+  const subjectOfLesson = new Map();
+  for (const l of (allLessons || [])) subjectOfLesson.set(l.id, subjectForLesson(l).id);
+  const itemsBySubject = new Map();
+  const seenFormula = new Set();
+  for (const d of (docs || [])) {
+    for (const f of (d.formulas || [])) {
+      const lid = f.src && f.src.lessonId;
+      const sid = (lid && subjectOfLesson.get(lid)) || d.subjectId || "general";
+      // Two documents can hold the same formula (an extraction before and after a
+      // course changed subject), so collapse them per subject by LaTeX.
+      const key = `${sid}\u0000${formulaKey(f.latex)}`;
+      if (seenFormula.has(key)) continue;
+      seenFormula.add(key);
+      if (!itemsBySubject.has(sid)) itemsBySubject.set(sid, []);
+      itemsBySubject.get(sid).push(f);
+    }
+  }
   // A formula answers "what do I compute"; the chapter answers "where does this
   // belong in the course", which is how a student actually looks a formula up
   // before an exam. Every formula already records the lesson it was extracted
@@ -8513,24 +8563,25 @@ async function renderFormulas() {
     const lessons = subjectLessonData(allLessons, subj.id);
     const withPoints = lessons.filter((l) => (l.points || []).length);
     return { subj, lessons, withPoints, doc: docById.get(subj.id) || null };
-  }).filter((r) => r.lessons.length || r.doc);
-  const totalFormulas = rows.reduce((n, r) => n + ((r.doc && r.doc.formulas) || []).length, 0);
-  const totalChem = rows.reduce((n, r) => n + ((r.doc && r.doc.formulas) || []).filter(isReactionEntry).length, 0);
+  }).filter((r) => r.lessons.length || r.doc || (itemsBySubject.get(r.subj.id) || []).length);
+  const formulasOf = (r) => itemsBySubject.get(r.subj.id) || [];
+  const totalFormulas = rows.reduce((n, r) => n + formulasOf(r).length, 0);
+  const totalChem = rows.reduce((n, r) => n + formulasOf(r).filter(isReactionEntry).length, 0);
   const totalMath = totalFormulas - totalChem;
   // Folded subjects are remembered per browser, the same way the per-point English
   // toggle is: hiding a subject is a reading preference, not a one-off click.
   const collapsedSubjects = new Set(loadFoldedSubjects());
-  const foldable = rows.filter((r) => ((r.doc && r.doc.formulas) || []).length).length;
+  const foldable = rows.filter((r) => formulasOf(r).length).length;
   // Chapter grouping is a reading preference, so it is remembered like the fold.
   const groupMode = formulaGroupMode();
   const groupable = rows.some((r) => {
-    const items = (r.doc && r.doc.formulas) || [];
+    const items = formulasOf(r);
     return new Set(items.map((f) => (f.src && f.src.lessonId) || "")).size > 1;
   });
 
   const cards = rows.map((r) => {
     const doc = r.doc;
-    const items = (doc && doc.formulas) || [];
+    const items = formulasOf(r);
     // Lessons with points that are not yet folded into this subject's library:
     // the signal that a freshly uploaded chapter still needs extracting.
     const covered = new Set((doc && doc.lessonIds) || []);

@@ -7615,10 +7615,19 @@ async function gradeStudyEntry(value) {
     const grade = Number(value);
     const { lesson, point, idx } = entry;
     const updatedPoint = schedulePoint(point, grade);
-    lesson.points[idx] = updatedPoint;
-    await db.put("lessons", lesson);
+    // The study queue is built from the LIST view of lessons, which never carries
+    // explanations, key terms, supplements, figure captions, the outline or slide
+    // text (that is the point of the list payload). Grading a knowledge point used
+    // to save that record straight back, so every grade rewrote the whole lesson
+    // without that content — a lesson regenerated minutes earlier lost all of its
+    // explanations this way. Grading now writes onto the full record.
+    const full = await getLessonFull(lesson.id).catch(() => null) || lesson;
+    full.points = Array.isArray(full.points) ? full.points : [];
+    full.points[idx] = { ...(full.points[idx] || {}), ...updatedPoint };
+    full.updatedAt = Date.now();
+    await db.put("lessons", full);
     const cached = fullLessonCache.get(lesson.id);
-    if (cached && cached.points) cached.points[idx] = updatedPoint;
+    if (cached && cached.points) cached.points[idx] = full.points[idx];
     reviewStats.points++;
     reviewStats.pointGrades[grade] = (reviewStats.pointGrades[grade] || 0) + 1;
     if (grade === 0 && !reviewRequeued.has(entry.id)) {

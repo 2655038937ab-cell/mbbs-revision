@@ -990,6 +990,45 @@ def _attach_lesson_images(lesson):
     return lesson
 
 
+
+def _lesson_content_loss(prev, incoming):
+    """Point fields (and the outline) that exist in the stored lesson but arrive empty.
+
+    A list-only lesson record never carries explanations, key terms, supplements,
+    figure captions, the outline or slide text — that is what makes the list payload
+    small. Saving such a record back therefore deletes that content from the stored
+    lesson, and the app has done exactly that twice: once from a folder edit, once
+    from the study queue while grading a knowledge point (a lesson generated minutes
+    earlier lost all 46 explanations). The client no longer does it, but a browser
+    still running a cached copy would, so refuse the write and explain.
+    """
+    if not isinstance(prev, dict) or not isinstance(incoming, dict):
+        return []
+    stored = {}
+    for p in prev.get("points") or []:
+        if isinstance(p, dict) and (p.get("title") or "").strip():
+            stored.setdefault((p.get("title") or "").strip(), p)
+    lost = []
+    for p in incoming.get("points") or []:
+        if not isinstance(p, dict):
+            continue
+        was = stored.get((p.get("title") or "").strip())
+        if not was:
+            continue
+        for field in ("explanation", "supplement"):
+            before = was.get(field)
+            after = p.get(field)
+            if isinstance(before, str) and before.strip() and not (isinstance(after, str) and after.strip()):
+                lost.append("%s·%s" % ((p.get("title") or "")[:22], field))
+                break
+        else:
+            if (was.get("keyTerms") or []) and not (p.get("keyTerms") or []):
+                lost.append("%s·keyTerms" % (p.get("title") or "")[:22])
+    if prev.get("outline") and not incoming.get("outline"):
+        lost.append("outline")
+    return lost
+
+
 def _keep_stored_questions(existing, incoming):
     """Never let a stale tab replace an existing quiz's questions.
 
@@ -2038,6 +2077,18 @@ class Handler(BaseHTTPRequestHandler):
                     self._send_json({"error": "Record must include an id"}, 400)
                     return
                 if parts[0] == "lessons":
+                    # Refuse an update that would erase content the server already
+                    # holds (see _lesson_content_loss). Three lost fields is the
+                    # threshold: clearing one by hand stays possible, losing a
+                    # lesson's worth of text does not silently happen.
+                    loss = _lesson_content_loss(get_store().get("lessons", body.get("id")), body)
+                    if len(loss) >= 3:
+                        self._send_json({
+                            "error": ("This save would erase knowledge-point text the server already "
+                                      "has (%d fields, e.g. %s). The lesson was probably loaded from a "
+                                      "list view — reopen it and retry."
+                                      % (len(loss), ", ".join(loss[:3])))}, 409)
+                        return
                     # Store lesson images in the separate lessonImages store so
                     # list reads stay light; a light (grading) update leaves
                     # existing images untouched.

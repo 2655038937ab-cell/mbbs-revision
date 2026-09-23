@@ -25,10 +25,19 @@
  * Growth is bounded: the content cache keeps the newest ~200 responses and is
  * trimmed to roughly 250 MB, dropping the oldest entries first.
  */
-const VERSION = "v1";
-const SHELL_CACHE = "mbbs-shell-" + VERSION;
-const DATA_CACHE = "mbbs-data-" + VERSION;
-const ASSET_CACHE = "mbbs-assets-" + VERSION;
+// Shell/asset version: static JS and CSS are served cache-first, so a browser that
+// has already installed this worker keeps running the previous bundle until its
+// background revalidation succeeds — which can leave it on old code for days.
+// Bump SHELL_VERSION whenever a file in SHELL below (or any CSS/JS asset) changes;
+// the worker then installs anew and re-fetches the shell.
+const SHELL_VERSION = "v2";
+// The study-content cache has its own version on purpose: bumping it would throw
+// away everything a student has downloaded for offline use, and cached lessons
+// refresh themselves in the background anyway.
+const DATA_VERSION = "v1";
+const SHELL_CACHE = "mbbs-shell-" + SHELL_VERSION;
+const DATA_CACHE = "mbbs-data-" + DATA_VERSION;
+const ASSET_CACHE = "mbbs-assets-" + SHELL_VERSION;
 
 const SHELL = [
   "./",

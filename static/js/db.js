@@ -79,7 +79,11 @@ export const db = {
     // Single light lesson (no image payloads) for flows that only touch
     // points/text, e.g. the Feynman self-test.
     const d = await j(await authedFetch(`/api/store/${store}/${encodeURIComponent(id)}?light=1`));
-    return d.item ? markPartial(d.item) : null;
+    // Deliberately NOT marked partial: "light" only nulls image dataUrls, and the
+    // server re-attaches them from the lessonImages store on PUT, so saving such a
+    // record back is safe (the Feynman self-test autosaves exactly this way). Only
+    // the field-slimming list endpoints lose content for good.
+    return d.item ?? null;
   },
   async getAll(store) {
     const hit = _thawCache(store);

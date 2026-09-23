@@ -83,13 +83,15 @@ def restore_lesson(lesson, ref):
             changes.append(f"slide {s.get('index')} 文字")
         if not (s.get("notes") or "").strip() and (r.get("notes") or "").strip():
             s["notes"] = r["notes"]
+        # An empty caption object is a placeholder, not content: restoring it would
+        # change nothing and make every run report the same "missing" caption.
         caps = {i.get("name"): i.get("caption") for i in r.get("images") or []}
         for im in s.get("images") or []:
             if not isinstance(im, dict):
                 continue
             if not ((im.get("caption") or {}).get("caption") or "").strip():
                 cap = caps.get(im.get("name"))
-                if cap:
+                if cap and ((cap.get("caption") or "") + (cap.get("takeaway") or "")).strip():
                     im["caption"] = cap
                     changes.append(f"slide {s.get('index')} 图注")
     for p in lesson.get("points") or []:

@@ -6357,22 +6357,34 @@ async function generateStudySet(lessonId, regenerate = false) {
   let cards = [];
   if (points.length) {
     pm.setStep(step, "running");
-    const pchunks = chunkText([pointsToText(points)], 9000);
-    pm.msg(`Writing flashcards (${pchunks.length} part${pchunks.length > 1 ? "s" : ""})…`);
-    const results = await parallelMap(pchunks, 8, async (pchunk) => {
+    // One call per SMALL batch, like the quiz step below. Sending all 80 points as a
+    // single 9000-character request produced a reply truncated at the 8000-token
+    // ceiling; that failed to parse, was reported as "no cards", and the lesson's
+    // existing cards were replaced by nothing.
+    const CB = 12;
+    const cardBatches = [];
+    for (let i = 0; i < points.length; i += CB) cardBatches.push(points.slice(i, i + CB));
+    pm.msg(`Writing flashcards (${cardBatches.length} part${cardBatches.length > 1 ? "s" : ""})…`);
+    const results = await parallelMap(cardBatches, 8, async (batch) => {
       if (pm.isCancelled()) return null;
-      const r = await api.llm([{ role: "system", content: SYS }, { role: "user", content: cardsPrompt(pchunk, subjectForLesson(lesson)) }], { json_mode: true, max_tokens: 8000 });
+      const r = await api.llm([{ role: "system", content: SYS }, { role: "user", content: cardsPrompt(pointsToText(batch), subjectForLesson(lesson)) }], { json_mode: true, max_tokens: 16000 });
       if (r && r.usage) pm.addTokens(r.usage.total_tokens);
       if (r.error) return { error: r.error };
       const parsed = parseJSON(r.content);
-      return parsed && Array.isArray(parsed.cards) ? parsed.cards : [];
+      if (parsed && Array.isArray(parsed.cards)) return parsed.cards;
+      const salvaged = salvageArray(String((r && r.content) || ""), "cards", "front");
+      if (salvaged.length) return { cards: salvaged, error: `返回内容不完整，已抢救出 ${salvaged.length} 张卡片` };
+      return { error: `卡片返回内容无法解析（${String((r && r.content) || "").length} 字符，疑似被截断）` };
     });
+    let cardError = "";
     for (const res of results) {
       if (!res) continue;
-      if (res.error) { pm.setStep(step, "error"); toast("Flashcards failed: " + res.error, "error"); }
-      else cards = cards.concat(res.map((c) => newCard({ lessonId, front: c.front, back: c.back })));
+      const list = Array.isArray(res) ? res : (Array.isArray(res.cards) ? res.cards : []);
+      if (res.error && !cardError) cardError = res.error;
+      cards = cards.concat(list.map((c) => newCard({ lessonId, front: c.front, back: c.back })));
     }
-    if (cards.length) pm.setStep(step, "done"); else pm.setStep(step, "error");
+    if (cardError) { pm.setStep(step, "error"); toast("Flashcards: " + cardError, "error"); }
+    else if (cards.length) pm.setStep(step, "done"); else pm.setStep(step, "error");
     pm.setProgress(0.73);
   } else pm.setStep(step, "done");
   if (pm.isCancelled()) { pm.cancelled(); return; }
@@ -6445,13 +6457,18 @@ async function generateStudySet(lessonId, regenerate = false) {
 
   if (pm.isCancelled()) { pm.cancelled(); return; }
 
-  // Re-generate: replace old cards/quiz instead of duplicating
+  // Re-generate: replace old cards/quiz instead of duplicating — but only what was
+  // actually regenerated. Deleting first and then writing nothing is how a lesson
+  // lost all 161 of its flashcards to a failed generation.
   if (regenerate) {
     const [oldCards, oldQuizzes] = await Promise.all([
       db.getAllByIndex("cards", "lessonId", lessonId),
       db.getAllByIndex("quizzes", "lessonId", lessonId),
     ]);
-    await Promise.all([...oldCards.map((c) => db.delete("cards", c.id)), ...oldQuizzes.map((q) => db.delete("quizzes", q.id))]);
+    const dropCards = cards.length ? oldCards : [];
+    const dropQuizzes = quiz ? oldQuizzes : [];
+    await Promise.all([...dropCards.map((c) => db.delete("cards", c.id)), ...dropQuizzes.map((q) => db.delete("quizzes", q.id))]);
+    if (!cards.length && oldCards.length) pm.msg(`卡片没有重新生成成功，已保留原来的 ${oldCards.length} 张。`);
   }
 
   // Save
@@ -6765,22 +6782,30 @@ async function generateCardsOnly(lessonId) {
   const pm = progressPanel((lesson.title || "闪卡") + " · 生成闪卡");
   pm.addStep("Generate flashcards");
   pm.setStep(0, "running");
-  const pchunks = chunkText([pointsToText(lesson.points)], 9000);
+  const CB = 12;
+  const cardBatches = [];
+  for (let i = 0; i < lesson.points.length; i += CB) cardBatches.push(lesson.points.slice(i, i + CB));
   let cards = [];
-  pm.msg(`Writing flashcards (${pchunks.length} part${pchunks.length > 1 ? "s" : ""})…`);
-  const results = await parallelMap(pchunks, 8, async (pchunk) => {
+  pm.msg(`Writing flashcards (${cardBatches.length} part${cardBatches.length > 1 ? "s" : ""})…`);
+  const results = await parallelMap(cardBatches, 8, async (batch) => {
     if (pm.isCancelled()) return null;
-    const r = await api.llm([{ role: "system", content: SYS }, { role: "user", content: cardsPrompt(pchunk, subjectForLesson(lesson)) }], { json_mode: true, max_tokens: 8000 });
-      if (r && r.usage) pm.addTokens(r.usage.total_tokens);
+    const r = await api.llm([{ role: "system", content: SYS }, { role: "user", content: cardsPrompt(pointsToText(batch), subjectForLesson(lesson)) }], { json_mode: true, max_tokens: 16000 });
+    if (r && r.usage) pm.addTokens(r.usage.total_tokens);
     if (r.error) return { error: r.error };
     const parsed = parseJSON(r.content);
-    return parsed && Array.isArray(parsed.cards) ? parsed.cards : [];
+    if (parsed && Array.isArray(parsed.cards)) return parsed.cards;
+    const salvaged = salvageArray(String((r && r.content) || ""), "cards", "front");
+    if (salvaged.length) return { cards: salvaged, error: `返回内容不完整，已抢救出 ${salvaged.length} 张卡片` };
+    return { error: `卡片返回内容无法解析（${String((r && r.content) || "").length} 字符，疑似被截断）` };
   });
+  let cardError = "";
   for (const res of results) {
     if (!res) continue;
-    if (res.error) { pm.setStep(0, "error"); toast("Flashcards failed: " + res.error, "error"); }
-    else cards = cards.concat(res.map((c) => newCard({ lessonId, front: c.front, back: c.back })));
+    const list = Array.isArray(res) ? res : (Array.isArray(res.cards) ? res.cards : []);
+    if (res.error && !cardError) cardError = res.error;
+    cards = cards.concat(list.map((c) => newCard({ lessonId, front: c.front, back: c.back })));
   }
+  if (cardError) { toast("Flashcards: " + cardError, "error"); }
   if (pm.isCancelled()) { pm.cancelled(); return; }
   if (cards.length) {
     const oldCards = await db.getAllByIndex("cards", "lessonId", lessonId);
@@ -8082,9 +8107,20 @@ function formulaKey(latex) {
 // so walk the "formulas" array and parse each object on its own: one broken object
 // then costs one formula instead of the entire batch.
 function salvageFormulas(text) {
+  return salvageArray(text, "formulas", "latex");
+}
+
+/* Recover the complete objects from a JSON array the model left truncated.
+ *
+ * A reply that hits the token ceiling ends mid-object, so JSON.parse fails and the
+ * whole batch used to look like "the model found nothing" — which is how a lesson
+ * ended up with zero flashcards after its old ones had been deleted. Pulling out
+ * every object that did arrive keeps most of the batch.
+ */
+function salvageArray(text, arrayKey, requiredField) {
   const s = String(text || "");
   const out = [];
-  const key = s.indexOf('"formulas"');
+  const key = s.indexOf('"' + arrayKey + '"');
   if (key === -1) return out;
   let depth = 0, start = -1, inStr = false, esc = false;
   for (let i = key; i < s.length; i++) {
@@ -8102,9 +8138,9 @@ function salvageFormulas(text) {
       if (depth === 0 && start >= 0) {
         try {
           const o = JSON.parse(s.slice(start, i + 1));
-          // Require latex: an entry without it is dropped by the merge anyway, and
-          // counting it would overstate how much was actually recovered.
-          if (o && typeof o === "object" && typeof o.latex === "string" && o.latex.trim()) out.push(o);
+          // Require the entry's key field: an entry without it is dropped by the
+          // merge anyway, and counting it would overstate what was recovered.
+          if (o && typeof o === "object" && typeof o[requiredField] === "string" && o[requiredField].trim()) out.push(o);
         } catch { /* this object is the broken one — skip it, keep the rest */ }
         start = -1;
       }

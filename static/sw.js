@@ -166,8 +166,28 @@ self.addEventListener("fetch", (event) => {
   if (isAsset(url)) { event.respondWith(staleWhileRevalidate(req, ASSET_CACHE)); return; }
 });
 
+/* A saved record must not keep being served from the offline copy of an older
+   response: drop every cached answer that could contain it. The record itself and
+   the list it belongs to are both affected. */
+async function invalidateStore(store, id) {
+  if (!store) return;
+  const cache = await caches.open(DATA_CACHE);
+  const base = `/api/store/${store}`;
+  for (const req of await cache.keys()) {
+    const path = new URL(req.url).pathname;
+    if (path === base || path.startsWith(base + "/")) {
+      if (id && path !== base && !path.endsWith("/" + id)) continue;
+      await cache.delete(req);
+    }
+  }
+}
+
 self.addEventListener("message", (event) => {
   const msg = event.data || {};
+  if (msg.type === "store-changed") {
+    event.waitUntil(invalidateStore(String(msg.store || ""), String(msg.id || "")));
+    return;
+  }
   if (msg.type === "clear-offline") {
     event.waitUntil(Promise.all([caches.delete(DATA_CACHE), caches.delete(ASSET_CACHE)])
       .then(() => event.source && event.source.postMessage({ type: "offline-cleared" })));

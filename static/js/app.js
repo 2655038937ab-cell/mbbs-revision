@@ -513,6 +513,13 @@ let mistakeStats = { shown: 0, got: 0, missed: 0 };
 // detail view needs the real images, so cache the full record per lesson to
 // avoid re-downloading ~40 MB on every tab switch.
 const fullLessonCache = new Map();
+// A lesson saved on the server invalidates the cached copy: without this the lesson
+// page kept rendering the pre-generation lesson after a successful generation, which
+// reads exactly like "the key points were lost".
+window.addEventListener("mbbs-store-write", (e) => {
+  const d = (e && e.detail) || {};
+  if (d.store === "lessons" && d.id) fullLessonCache.delete(d.id);
+});
 async function getLessonFull(lessonId, force = false) {
   if (!force && fullLessonCache.has(lessonId)) return fullLessonCache.get(lessonId);
   const lesson = await db.get("lessons", lessonId);

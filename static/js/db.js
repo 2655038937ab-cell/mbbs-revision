@@ -10,6 +10,26 @@ async function j(resp) {
   return data;
 }
 
+// A write is invisible to the offline cache: the service worker answers GETs from
+// the copy it cached earlier and only refreshes it in the background, so the app
+// could load the pre-write record right after a generation or an edit. That is
+// what made a freshly generated lesson show "0 points" until a second reload.
+// Tell the worker which records changed so it drops them.
+function notifyWrite(store, id) {
+  try {
+    if (typeof window !== "undefined" && window.dispatchEvent) {
+      window.dispatchEvent(new CustomEvent("mbbs-store-write", { detail: { store, id: id || "" } }));
+    }
+  } catch { /* non-browser context */ }
+  try {
+    const sw = typeof navigator !== "undefined" && navigator.serviceWorker;
+    if (!sw) return;
+    const msg = { type: "store-changed", store, id: id || "" };
+    if (sw.controller) sw.controller.postMessage(msg);
+    else if (sw.ready) sw.ready.then((r) => r.active && r.active.postMessage(msg)).catch(() => {});
+  } catch { /* no worker available: nothing to invalidate */ }
+}
+
 // Records that came back from a list-only (lite) or slimmed endpoint. Those
 // endpoints deliberately omit fields — point explanations, keyTerms,
 // supplements, figure captions, the outline, slide text — so saving one of them
@@ -53,6 +73,7 @@ export const db = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(value),
     }));
+    notifyWrite(store, value.id);
     return value;
   },
   async bulkPut(store, values) {
@@ -69,6 +90,7 @@ export const db = {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ items: batch }),
       }));
+      batch.forEach((v) => notifyWrite(store, v && v.id));
     }
   },
   async get(store, id) {
@@ -127,9 +149,11 @@ export const db = {
   async delete(store, id) {
     _freeCache(store);
     await j(await authedFetch(`/api/store/${store}/${encodeURIComponent(id)}`, { method: "DELETE" }));
+    notifyWrite(store, id);
   },
   async clear(store) {
     _freeCache(store);
     await j(await authedFetch(`/api/store/${store}`, { method: "DELETE" }));
+    notifyWrite(store, "");
   },
 };

@@ -1,0 +1,28 @@
+# 追加到 /opt/mbbs/Caddyfile 的一个站点块
+# 改两处：<域名> 和 <name>（容器名，必须和 compose 里的 container_name 一致）
+#
+# 生效方式（先校验再重载，语法错不会影响现有站点）：
+#   docker exec mbbs-caddy-1 caddy validate --config /etc/caddy/Caddyfile
+#   docker exec mbbs-caddy-1 caddy reload --config /etc/caddy/Caddyfile
+
+<域名> {
+	encode zstd gzip
+	# 大文件上传时调大（默认 1 MB 会直接 413）
+	request_body {
+		max_size 200MB
+	}
+	reverse_proxy <name>:3000
+	log {
+		output file /data/access-<name>.log {
+			roll_size 10mb
+			roll_keep 3
+		}
+	}
+}
+
+# 静态站点可以直接让 Caddy 发文件，省一个容器：
+# <域名> {
+# 	root * /srv/<name>-static
+# 	file_server
+# 	encode zstd gzip
+# }

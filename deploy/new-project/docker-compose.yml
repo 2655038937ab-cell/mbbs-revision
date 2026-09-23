@@ -1,0 +1,39 @@
+# 新项目模板：拷到 /opt/<name>/docker-compose.yml 后改三处 ——
+#   <name>   项目名（小写字母数字），用来做容器名和目录名
+#   <image>  你的镜像（本地 build 或镜像仓库地址）
+#   端口      容器内监听的端口（Caddy 通过容器名 + 这个端口访问）
+#
+# 关键点：
+#  1. 接入现有网络 mbbs_default，Caddy 才能用容器名直连（不必对外暴露端口）
+#  2. 必须有资源上限，否则内存泄漏会拖死同机的其他站点
+#  3. restart: unless-stopped，并配 healthcheck
+services:
+  <name>:
+    build: .                      # 或 image: registry.example.com/<name>:20260923-1
+    container_name: <name>
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3000"                # 改：容器内端口
+      # 密钥走 .env（不要写进这个文件，别提交进 git）
+      DATABASE_URL: "${DATABASE_URL:-}"
+      API_KEY: "${API_KEY:-}"
+    volumes:
+      - /srv/<name>-data:/app/data     # 持久化目录：容器重建不丢
+    mem_limit: 512m               # 内存上限
+    cpus: 1.0                     # CPU 上限
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/ >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [mbbs_default]
+
+networks:
+  # 现有 Caddy 所在的网络，声明成 external 表示"用它，不要新建"
+  mbbs_default:
+    external: true

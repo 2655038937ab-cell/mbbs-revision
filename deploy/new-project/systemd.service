@@ -1,0 +1,34 @@
+# 不用 Docker 时的服务模板：拷到 /etc/systemd/system/<name>.service
+# 改：<name>、WorkingDirectory、ExecStart、User、内存上限
+#
+# 启用：
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now <name>
+#   journalctl -u <name> -f
+[Unit]
+Description=<name>
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<name>                     # 专用系统用户：sudo useradd -r -s /usr/sbin/nologin <name>
+WorkingDirectory=/opt/<name>
+EnvironmentFile=/opt/<name>/.env      # 密钥放这里，权限 600
+ExecStart=/opt/<name>/start.sh
+Restart=always
+RestartSec=3
+
+# 防拖垮同机其他站点：内存超限只杀自己，CPU 最多用 1 核
+MemoryMax=512M
+MemorySwapMax=256M
+CPUQuota=100%
+
+# 最小权限
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/srv/<name>-data
+
+[Install]
+WantedBy=multi-user.target

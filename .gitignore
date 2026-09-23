@@ -53,3 +53,5 @@ textbook_parts/
 deepseek harness/
 测试/
 GOOGLE_DRIVE_SETUP.md
+# ---------- 只留在本地的服务器笔记（含 IP/域名等环境信息，不进仓库）----------
+deploy/NEW-PROJECT.md

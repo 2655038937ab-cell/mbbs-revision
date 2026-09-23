@@ -19,11 +19,16 @@ Restoring is additive: a field that already has a value is never overwritten, so
 edits made after the damage survive. Lessons are matched by title, points by title
 (with the slide number as a tie-breaker), slides by index, images by name.
 """
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from db_backup import backup_database  # noqa: E402
+
 import argparse
 import datetime as dt
 import json
 import os
-import shutil
+
 import sqlite3
 import sys
 
@@ -143,7 +148,7 @@ def main():
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = os.path.join(args.data_dir, f"data.db.bak-restore-{stamp}")
     if args.apply:
-        shutil.copy2(db_path, backup)
+        backup_database(db_path, backup)
         print(f"备份已写: {backup}\n")
     touched = 0
     for lid, data in rows:

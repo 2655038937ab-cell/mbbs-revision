@@ -30,12 +30,17 @@ Usage
   python reattribute_slides.py data-pku/data.db --title "Lecture 1.2"           # preview
   python reattribute_slides.py data-pku/data.db --title "Lecture 1.2" --apply   # write
 """
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from db_backup import backup_database  # noqa: E402
+
 import argparse
 import collections
 import json
 import math
 import re
-import shutil
+
 import sqlite3
 import time
 from datetime import datetime
@@ -300,7 +305,7 @@ def main():
         if args.apply and moves:
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             bak = f"{args.db}.bak-slidefix-{stamp}"
-            shutil.copy2(args.db, bak)
+            backup_database(args.db, bak)
             print(f"\n  已备份 → {bak}")
             for r in moves:
                 l["points"][r["i"]]["slide"] = r["best"]

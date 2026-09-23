@@ -13,10 +13,15 @@ Usage:
 Kept record per group (default `richest`): the one with the most knowledge points,
 then the most recently updated, then the earliest created.
 """
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from db_backup import backup_database  # noqa: E402
+
 import argparse
 import json
 import os
-import shutil
+
 import sqlite3
 import sys
 import time
@@ -117,7 +122,7 @@ def main():
         return 0
 
     backup = args.db + ".bak-dedupe-" + time.strftime("%Y%m%d-%H%M%S")
-    shutil.copy2(args.db, backup)
+    backup_database(args.db, backup)
     print("\n已备份到: %s" % backup)
 
     removed = 0

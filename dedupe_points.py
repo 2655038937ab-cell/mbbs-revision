@@ -35,13 +35,18 @@ Usage
   # legacy HTTP mode (needs a running server + login password)
   python dedupe_points.py http://127.0.0.1:8757 <password> [--apply]
 """
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from db_backup import backup_database  # noqa: E402
+
 import argparse
 import collections
 import json
 import math
 import os
 import re
-import shutil
+
 import sqlite3
 import sys
 import time
@@ -637,7 +642,7 @@ class DbBackend:
     def backup(self, tag):
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         bak = f"{self.path}.bak-{tag}-{stamp}"
-        shutil.copy2(self.path, bak)
+        backup_database(self.path, bak)
         return bak
 
     def close(self):

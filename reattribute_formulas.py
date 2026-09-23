@@ -17,12 +17,17 @@ strictly ahead of the runner-up lesson. Everything else is reported and left alo
   python3 reattribute_formulas.py --data-dir data-pku
   python3 reattribute_formulas.py --data-dir data-pku --apply
 """
+import os as _os
+import sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from db_backup import backup_database  # noqa: E402
+
 import argparse
 import datetime as dt
 import json
 import os
 import re
-import shutil
+
 import sqlite3
 import sys
 
@@ -97,7 +102,7 @@ def main():
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = os.path.join(args.data_dir, f"data.db.bak-formulas-{stamp}")
     if args.apply:
-        shutil.copy2(db_path, backup)
+        backup_database(db_path, backup)
         print(f"备份已写: {backup}\n")
 
     total_fixed = total_left = 0

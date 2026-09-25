@@ -731,7 +731,7 @@ function planStudyQueue(cards, lessons, mistakes, now = Date.now()) {
 
 
 /* ---------------- time tracking ---------------- */
-const ACTIVITY_LABELS = { study: "Reading / notes", review: "Spaced review", quiz: "Quizzes", mistakes: "Mistakes" };
+const ACTIVITY_LABELS = { study: "阅读与笔记", review: "间隔复习", quiz: "做题", mistakes: "错题", browse: "浏览" };
 let currentActivity = null;
 let activitySeconds = 0;
 let lastTick = Date.now();
@@ -829,6 +829,42 @@ function trimSessions() {
   }).catch(() => {});
 }
 
+/* After the answer is revealed, the self-test asks one more thing: did your own
+ * explanation actually cover the point's key terms? Self-rating alone is a guess —
+ * "I said something about this" — and the checklist turns it into something a
+ * student can check against what they just said. Only shown when the point has
+ * key terms (all generated points do). */
+function keyTermChecklist(p) {
+  const terms = (p && p.keyTerms) || [];
+  if (!terms.length) return "";
+  return `<div class="kp-selfcheck" style="margin-top:12px;border:1px dashed var(--border);border-radius:10px;padding:10px 12px">
+    <div class="sub" style="margin-bottom:6px">刚才你自己的解释里，讲到下面几个了吗？（点一下打勾）</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+      ${terms.slice(0, 8).map((t, i) => `<button class="chip kp-check" data-check="${i}" style="font-size:13px">○ ${escapeHtml(String(t).replace(/（[^）]*）/g, "").slice(0, 24))}</button>`).join("")}
+    </div>
+    <div class="sub kp-check-note" style="margin-top:8px;font-size:12px"></div>
+  </div>`;
+}
+function bindKeyTermChecks(root) {
+  const boxes = (root || document).querySelectorAll(".kp-check");
+  if (!boxes.length) return;
+  if (Array.from(boxes).some((b) => b.dataset.bound === "1")) return;   // already wired
+  boxes.forEach((b) => { b.dataset.bound = "1"; });
+  const note = (root || document).querySelector(".kp-check-note");
+  const update = () => {
+    const total = boxes.length;
+    const hit = Array.from(boxes).filter((b) => b.dataset.on === "1").length;
+    if (note) note.textContent = hit === 0 ? "" : `已勾 ${hit}/${total} 个要点${hit === total ? " —— 这题可以按「讲得很透」自评 ✓" : hit >= Math.ceil(total * 0.6) ? " —— 基本覆盖，按「说得清楚」即可" : " —— 还有遗漏，建议按「说得含糊」再来一次"}`;
+  };
+  boxes.forEach((btn) => btn.addEventListener("click", () => {
+    const on = btn.dataset.on === "1";
+    btn.dataset.on = on ? "0" : "1";
+    btn.textContent = (on ? "○ " : "● ") + btn.textContent.slice(2);
+    btn.classList.toggle("active", !on);
+    update();
+  }));
+}
+
 function MINS_AGO(m) { return m < 60 ? m + " 分钟前" : Math.floor(m / 60) + " 小时前"; }
 function clockOf(ts) { return new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }); }
 
@@ -857,11 +893,14 @@ function startTimeTracking() {
   setInterval(() => {
     const now = Date.now();
     const active = currentActivity && document.visibilityState === "visible" && (now - lastInteraction) < IDLE_LIMIT_MS;
-    if (active) {
-      activitySeconds += (now - lastTick) / 1000;
-      // Same "visible and actually studying" rule as the activity totals, so the
-      // session's active time cannot disagree with the daily figure.
-      if (currentSession) currentSession.seconds += (now - lastTick) / 1000;
+    if (active) activitySeconds += (now - lastTick) / 1000;
+    // The session log answers "when did I start, when did I last touch this", so it
+    // counts USE of the site (visible, not idle) rather than only the moments a
+    // formal study activity is running — otherwise browsing key points or the
+    // formula library showed a confusing "0s" next to a session that was clearly
+    // going on. The daily study figure above stays deliberately stricter.
+    if (currentSession && document.visibilityState === "visible" && (now - lastInteraction) < IDLE_LIMIT_MS) {
+      currentSession.seconds += (now - lastTick) / 1000;
     }
     lastTick = now;
   }, 1000);
@@ -1322,7 +1361,7 @@ For each key point return:
 - "category": [topic, subtopic, aspect] as described above
 - "explanation": a single STRING of bullet points (each line starting with "- ", lines separated by newlines), covering the mechanism or reasoning, the key facts, the numbers/units, and why it matters in this subject. Use 3-5 bullets normally; if the point is quantitative, ONE bullet MUST carry the full worked derivation (per SHOW THE WORKING above) and you may use extra bullets for it. Do NOT return it as an array.
 - "importance": "high" | "medium" | "low"
-- "mnemonic": a short memory aid, or null
+- "mnemonic": a short memory aid, or null. DEFAULT TO null: most points have no genuinely memorable device, and a made-up jingle on every single point is noise a student skips. Write one only when it is short (≤12 字), specific to this point, and actually easier to recall than the point itself.
 - "tags": 1-3 short topic tags (e.g. "Cardiology", "Pharmacology")
 - "keyTerms": 2-5 exact key terms or phrases from the explanation to highlight
 - "slide": the number of the slide that actually TEACHES this point, taken from the "Slide N:" labels. It must never be an outline / agenda / recap / title / reference slide that merely mentions the topic (see STRUCTURE SLIDES above)
@@ -1424,7 +1463,7 @@ ${ptext}`;
 
 const mcqPrompt = (ptext, n, subject, isRetry = false) => `Create EXACTLY ${n} single-best-answer multiple-choice questions (university exam style: a clear stem, one unambiguously best option) from these key points — one question for EACH of the ${n} points, so every point is tested. Do NOT produce fewer than ${n} questions; if a point is hard to make a question from, still make a valid one. Output all ${n}.${isRetry ? `
 
-ONE OR MORE OF THESE WAS REJECTED BY AN AUTOMATIC CHECK because its explanation contradicted itself — it named a different option as correct, or called a wrong option "correct". Rewrite them so exactly ONE option is true and the explanation defends exactly that one.` : ""}
+ONE OR MORE OF THESE WAS REJECTED BY AN AUTOMATIC CHECK, for one of two reasons: (a) its explanation contradicted itself — it named a different option as correct, or called a wrong option "correct"; or (b) the correct option was recognisable by its SHAPE alone — clearly longer or shorter than the others. Rewrite each rejected question so exactly ONE option is true, ALL options are comparable in length and specificity (the correct one must not be the longest or the shortest), and the explanation defends exactly that one.` : ""}
 
 ${languageReminder()}${subjectQuizRule(subject)}
 
@@ -1529,6 +1568,11 @@ function forceExplanationAnswer(text, answer, count) {
   return String(text).replace(RE, (m, pre, letter, tail) => pre + want + tail);
 }
 
+// Comparable stem, for spotting a question that was already asked in this bank.
+function normStem(t) {
+  return String(t || "").toLowerCase().replace(/[^\w\u4e00-\u9fff]/g, "").slice(0, 90);
+}
+
 /* Which option does the explanation itself call the correct one?
  *
  * The generator is told to open with "X正确：…" and then rule out the rest. When
@@ -1631,6 +1675,21 @@ function quizQuestionInvalid(q) {
   const n = q.options.length;
   const ans = Number(q.answer);
   if (!(ans >= 0 && ans < n)) return true;
+  // The correct option must not be findable by its SHAPE. The prompt has always
+  // said so ("the correct option must never be the longest"), and the model still
+  // did it in 43% of the MBBS bank and 55% of the PKU one: a student who always
+  // picks the longest option scored better than half. A model instruction that is
+  // ignored this consistently is a job for a deterministic check, so a question
+  // whose correct option stands out by length is rejected and re-asked.
+  if (n >= 3) {
+    const lens = q.options.map((o) => String(o || "").trim().length).sort((a, b) => a - b);
+    const mid = lens[Math.floor(lens.length / 2)];
+    const mine = String(q.options[ans] || "").trim().length;
+    const max = lens[lens.length - 1], min = lens[0];
+    const uniqueMax = mine === max && lens.filter((x) => x === max).length === 1;
+    const uniqueMin = mine === min && lens.filter((x) => x === min).length === 1;
+    if (mid >= 8 && ((uniqueMax && mine > mid * 1.3) || (uniqueMin && mine < mid * 0.55))) return true;
+  }
   // A question about the lecture's own objectives/textbook cannot be answered from
   // the subject itself, so it is dropped and regenerated like any other broken item.
   if (QUIZ_META.test(String(q.question || ""))) return true;
@@ -2371,7 +2430,7 @@ function showLogin() {
       <div class="card" style="padding:30px">
         <div style="font-size:38px;text-align:center">🩺</div>
         <h1 style="text-align:center;font-size:20px;margin:6px 0 2px">MBBS Revision</h1>
-        <p class="sub" style="text-align:center;margin-bottom:20px">Sign in to your account</p>
+        <p class="sub" style="text-align:center;margin-bottom:20px">登录你的账号</p>
         <input type="password" id="login-pw" placeholder="Password" autocomplete="current-password" style="width:100%;padding:11px 13px;border:1.5px solid var(--border);border-radius:9px;font-size:15px;margin-bottom:12px">
         <button class="btn btn-primary btn-lg" id="login-btn" style="width:100%">Log in</button>
         <div id="login-err" class="sub" style="color:var(--red);text-align:center;margin-top:12px"></div>
@@ -2475,10 +2534,10 @@ async function renderDashboard() {
 
   $("#view").innerHTML = `
     <div class="page-head">
-      <div class="title-wrap"><h1>Dashboard</h1><p class="sub">Your active-recall command center.</p></div>
+      <div class="title-wrap"><h1>总览</h1><p class="sub">你的主动回忆学习中心。</p></div>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-ghost" id="btn-progress">📈 Progress</button>
-        <button class="btn btn-primary btn-lg" id="btn-upload">＋ Upload lesson</button>
+        <button class="btn btn-ghost" id="btn-progress">📈 进度</button>
+        <button class="btn btn-primary btn-lg" id="btn-upload">＋ 上传课件</button>
       </div>
     </div>
     <div class="card" style="margin-bottom:20px;display:flex;gap:18px;align-items:center;overflow:hidden;padding:0">
@@ -2499,13 +2558,13 @@ async function renderDashboard() {
       <div class="sub" style="white-space:nowrap">${fmtDuration(t.todaySec)} / ${goalMin}m ${goalReached ? "🎉 done!" : ""}</div>
     </div>
     <div class="grid grid-3" style="margin-bottom:24px">
-      <div class="card stat"><div class="stat-num">${lessons.length}</div><div class="stat-label">Lessons saved</div></div>
-      <div class="card stat"><div class="stat-num">${totalPoints}</div><div class="stat-label">Key points distilled</div></div>
-      <div class="card stat stat-click" data-go="review"><div class="stat-num" style="color:${dueCards ? "var(--amber)" : "inherit"}">${dueCards}</div><div class="stat-label">Cards due today</div></div>
-      <div class="card stat stat-click" data-go="review"><div class="stat-num" style="color:${duePoints ? "var(--amber)" : "inherit"}">${duePoints}</div><div class="stat-label">Points due today</div></div>
-      <div class="card stat stat-click" data-go="mistakes"><div class="stat-num" style="color:${dueMistakes ? "var(--red)" : "inherit"}">${dueMistakes}</div><div class="stat-label">Mistakes to review</div></div>
-      <div class="card stat stat-click" data-go="progress"><div class="stat-num">${fmtDuration(t.todaySec)}</div><div class="stat-label">Studied today</div></div>
-      <div class="card stat stat-click" data-go="progress"><div class="stat-num">🔥 ${t.streak}</div><div class="stat-label">Day streak</div></div>
+      <div class="card stat"><div class="stat-num">${lessons.length}</div><div class="stat-label">课程已保存</div></div>
+      <div class="card stat"><div class="stat-num">${totalPoints}</div><div class="stat-label">知识点提炼完成</div></div>
+      <div class="card stat stat-click" data-go="review"><div class="stat-num" style="color:${dueCards ? "var(--amber)" : "inherit"}">${dueCards}</div><div class="stat-label">今天到期的卡片</div></div>
+      <div class="card stat stat-click" data-go="review"><div class="stat-num" style="color:${duePoints ? "var(--amber)" : "inherit"}">${duePoints}</div><div class="stat-label">今天到期的知识点</div></div>
+      <div class="card stat stat-click" data-go="mistakes"><div class="stat-num" style="color:${dueMistakes ? "var(--red)" : "inherit"}">${dueMistakes}</div><div class="stat-label">待复习错题</div></div>
+      <div class="card stat stat-click" data-go="progress"><div class="stat-num">${fmtDuration(t.todaySec)}</div><div class="stat-label">今日学习时长</div></div>
+      <div class="card stat stat-click" data-go="progress"><div class="stat-num">🔥 ${t.streak}</div><div class="stat-label">连续天数</div></div>
     </div>
     <div class="card" style="margin-bottom:26px;padding:18px 20px">
       <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
@@ -2514,7 +2573,7 @@ async function renderDashboard() {
         <div class="sub" style="flex:1;min-width:200px">队列：${escapeHtml(studyBreakdown)}。复习卡与错题优先，新卡自动穿插并受每日上限控制。</div>
       </div>
     </div>
-    <h2>Recent lessons</h2>
+    <h2>最近的课程</h2>
     ${lessonsWith.length ? lessonsWith.sort((a, b) => b.createdAt - a.createdAt).slice(0, 6).map(lessonRow).join("") : emptyState("📚", "No lessons yet — upload your first PPT or PDF.")}
   `;
   $("#btn-upload").addEventListener("click", openUpload);
@@ -2715,9 +2774,9 @@ function lessonRow(l, cls, catOpts) {
         ${showBar ? `<div class="progress-bar" style="height:6px;margin-top:8px"><div class="progress-fill" style="width:${pct}%"></div></div>` : ""}
         ${showCat ? `<div style="margin-top:8px">
           <select class="lesson-cat search-select" data-lesson="${l.id}" title="设置该课分类（自动 = 按分类规则匹配）" style="font-size:12px;padding:3px 8px;max-width:200px">
-            <option value="">自动</option>
+            <option value="">自动（按标题匹配）</option>
             ${catOpts || ""}
-            <option value="__none__" ${manualId === "__none__" ? "selected" : ""}>📁 其他</option>
+            <option value="__none__" ${manualId === "__none__" ? "selected" : ""}>🏷 通用（不参与学科分类）</option>
           </select>
         </div>` : ""}
       </div>
@@ -2845,14 +2904,14 @@ async function renderLessons() {
   const queryHadFocus = document.activeElement && document.activeElement.id === "lesson-q";
   $("#view").innerHTML = `
     <div class="page-head">
-      <div class="title-wrap"><h1>Lessons</h1><p class="sub">${lessonsQuery.trim()
+      <div class="title-wrap"><h1>课程</h1><p class="sub">${lessonsQuery.trim()
         ? `Matching “${escapeHtml(lessonsQuery.trim())}”: ${lessonsWith.length} of ${totalLessons} lesson${totalLessons === 1 ? "" : "s"}${lessonsFolderFilter ? " in this folder" : ""}.`
         : `Everything you've studied, grouped by course code. ${items.filter((x) => x.type === "lesson").length} lessons total.`}</p></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         ${missingCount ? `<button class="btn btn-accent" id="btn-gen-missing" title="为所有还没提炼知识点的课一键生成笔记">📝 一键生成未生成的笔记 (${missingCount})</button>` : ""}
         <button class="btn btn-sm btn-ghost" id="btn-reclassify-all" title="用新的分类规则重新整理所有课程的知识点层级（不重新生成内容，每门约 2 次 AI 调用）">🏷 重排全部分类</button>
         <button class="btn btn-primary" id="btn-newtext">✍ New text lesson</button>
-        <button class="btn btn-primary" id="btn-upload">＋ Upload lesson</button>
+        <button class="btn btn-primary" id="btn-upload">＋ 上传课件</button>
       </div>
     </div>
     <div class="card" style="margin-bottom:16px;display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:12px 14px">
@@ -3336,7 +3395,7 @@ async function renderLessonDetailBody() {
   const nextId = idx >= 0 && idx < lessonOrder.length - 1 ? lessonOrder[idx + 1] : null;
 
   const tabs = [
-    ["points", "Key points"], ["cards", "Flashcards"], ["quiz", "Quiz"], ["mindmap", "Mind map"], ["figures", "Figures"], ["slides", "Slides"],
+    ["points", "✨ 知识点"], ["cards", "🃏 闪卡"], ["quiz", "📝 题目"], ["mindmap", "🗺 思维导图"], ["figures", "🖼 配图"], ["slides", "📄 原课件"],
   ];
   const isImmersive = immersiveOn && currentTab === "points";
 
@@ -3805,7 +3864,7 @@ function renderPointsTab(body, lesson) {
   // next render, so the box kept showing the previous lesson's query.
   if (kpQueryLesson !== currentLessonId) { kpQuery = ""; kpQueryLesson = currentLessonId; }
   if (!points.length) {
-    body.innerHTML = emptyState("✨", "No key points yet. Generate them from your slides with AI.",
+    body.innerHTML = emptyState("✨", "这门课还没有知识点. Generate them from your slides with AI.",
       `<div style="margin-top:14px"><button class="btn btn-accent btn-lg" id="btn-gen2">✨ Generate study set</button></div>`);
     const b = $("#btn-gen2"); if (b) b.addEventListener("click", () => generateStudySet(currentLessonId));
     return;
@@ -4695,21 +4754,21 @@ function renderCardsTab(body, lesson, cards) {
       <div class="flashcard-wrap">
         <div class="sub" style="text-align:center;margin-bottom:12px">Card ${idx + 1} / ${cards.length} · 翻牌后评分（同今日学习）</div>
         <div class="flashcard" id="fc">
-          <div class="card-label">Question</div>
+          <div class="card-label">题目</div>
           <div class="card-text" id="fc-text"></div>
         </div>
         <div id="fc-grades" hidden style="margin-top:14px">
           <div class="review-grade">
-            <button class="grade-btn grade-0" data-g="0"><span>Again</span><span class="g-int">${intervalLabel(preview[0].interval)}</span><span class="g-key">1</span></button>
-            <button class="grade-btn grade-1" data-g="1"><span>Hard</span><span class="g-int">${intervalLabel(preview[1].interval)}</span><span class="g-key">2</span></button>
-            <button class="grade-btn grade-2" data-g="2"><span>Good</span><span class="g-int">${intervalLabel(preview[2].interval)}</span><span class="g-key">3</span></button>
-            <button class="grade-btn grade-3" data-g="3"><span>Easy</span><span class="g-int">${intervalLabel(preview[3].interval)}</span><span class="g-key">4</span></button>
+            <button class="grade-btn grade-0" data-g="0"><span>完全忘了</span><span class="g-int">${intervalLabel(preview[0].interval)}</span><span class="g-key">1</span></button>
+            <button class="grade-btn grade-1" data-g="1"><span>有点吃力</span><span class="g-int">${intervalLabel(preview[1].interval)}</span><span class="g-key">2</span></button>
+            <button class="grade-btn grade-2" data-g="2"><span>说得清楚</span><span class="g-int">${intervalLabel(preview[2].interval)}</span><span class="g-key">3</span></button>
+            <button class="grade-btn grade-3" data-g="3"><span>太简单了</span><span class="g-int">${intervalLabel(preview[3].interval)}</span><span class="g-key">4</span></button>
           </div>
         </div>
         <div style="display:flex;justify-content:space-between;margin-top:16px">
-          <button class="btn" id="fc-prev">← Prev</button>
+          <button class="btn" id="fc-prev">← 上一张</button>
           <span class="sub" style="align-self:center">空格 翻牌 · 1-4 评分 · ←→ 切换</span>
-          <button class="btn" id="fc-next">Next →</button>
+          <button class="btn" id="fc-next">下一张 →</button>
         </div>
       </div>`;
     flipped = false; grading = false;
@@ -4914,7 +4973,7 @@ function renderQuizTab(body, lesson, quiz) {
   body.innerHTML = `
     <div class="card" style="margin-bottom:18px;display:flex;align-items:center;gap:16px;flex-wrap:wrap">
       <div>
-        <div class="sub">Last score</div>
+        <div class="sub">上次得分</div>
         <div style="font-size:26px;font-weight:800">${lastScore}</div>
       </div>
       <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">
@@ -5560,7 +5619,7 @@ function renderFiguresTab(body, lesson) {
   const uncaptioned = figs.filter((f) => !f.im.caption).length;
   body.innerHTML = `
     <div class="page-head" style="margin-bottom:14px">
-      <div class="title-wrap"><h2>Figures & diagrams</h2><p class="sub">${figs.length} ${fellBack ? "page" : "figure"}${figs.length === 1 ? "" : "s"}${fellBack ? "（这份文件每页是整页图片，没有独立插图，所以按页显示）" : (uncaptioned ? ` · ${uncaptioned} not yet captioned` : " · all captioned")}</p></div>
+      <div class="title-wrap"><h2>配图与示意图</h2><p class="sub">${figs.length} ${fellBack ? "page" : "figure"}${figs.length === 1 ? "" : "s"}${fellBack ? "（这份文件每页是整页图片，没有独立插图，所以按页显示）" : (uncaptioned ? ` · ${uncaptioned} not yet captioned` : " · all captioned")}</p></div>
       <button class="btn btn-accent" id="btn-caption">🖼 Caption with vision</button>
     </div>
     <div class="grid grid-2">${figs.map((f) => `
@@ -6037,13 +6096,13 @@ async function saveParsedLesson(res, filename, silent = false, autoGen = false, 
   if (silent) return lesson.id; // batch upload: don't pop the "generate?" modal per file
   // Ask whether to generate now
   openModal(`
-    <h2>Lesson imported</h2>
+    <h2>课程已导入</h2>
     <p>“${escapeHtml(title)}” — ${lesson.slides.length} slides parsed.</p>
     ${skipped.length ? `<p class="sub">⚠️ ${skipped.length} figure${skipped.length > 1 ? "s" : ""} in this file (${escapeHtml(skipped.slice(0, 4).join(", "))}${skipped.length > 4 ? " …" : ""}) is in a format a browser cannot display, so ${skipped.length > 1 ? "they were" : "it was"} left out — the slides themselves are unaffected.</p>` : ""}
     <p class="sub">Next, let AI distill the key points, flashcards, quiz questions and figure captions.</p>
     <div style="display:flex;gap:10px;margin-top:18px">
       <button class="btn btn-accent" id="go-gen">✨ Generate study set</button>
-      <button class="btn btn-ghost" id="go-later">Just view slides</button>
+      <button class="btn btn-ghost" id="go-later">只看课件</button>
     </div>`);
   $("#go-gen").addEventListener("click", () => { closeModal(); generateStudySet(lesson.id); });
   $("#go-later").addEventListener("click", () => { closeModal(); openLesson(lesson.id); });
@@ -6196,7 +6255,7 @@ function openCreateText(presetBody = "") {
     <div class="field"><label>Title (e.g. “CPR63 Shock — my notes”)</label>
       <input type="text" id="newtext-title" value="${escapeHtml(guessTitle)}" placeholder="e.g. GIS01 Liver anatomy" style="width:100%">
     </div>
-    <div class="field"><label>Content</label>
+    <div class="field"><label>内容</label>
       <textarea id="newtext-body" rows="14" placeholder="Paste your notes here…&#10;&#10;Separate paragraphs with a blank line." style="width:100%;resize:vertical;font-family:inherit">${escapeHtml(preset)}</textarea>
     </div>
     <div style="display:flex;gap:10px;align-items:center;margin-top:4px">
@@ -6248,12 +6307,12 @@ function openCreateText(presetBody = "") {
     fullLessonCache.set(lesson.id, lesson);
     toast("Lesson saved ✓");
     openModal(`
-      <h2>Lesson created</h2>
+      <h2>课程已创建</h2>
       <p>“${escapeHtml(title)}” — ${slides.length} slide${slides.length > 1 ? "s" : ""} from your text.</p>
       <p class="sub">Next, let AI distill the key points, flashcards and quiz questions.</p>
       <div style="display:flex;gap:10px;margin-top:18px">
         <button class="btn btn-accent" id="go-gen">✨ Generate study set</button>
-        <button class="btn btn-ghost" id="go-later">Just view slides</button>
+        <button class="btn btn-ghost" id="go-later">只看课件</button>
       </div>`);
     $("#go-gen").addEventListener("click", () => { closeModal(); generateStudySet(lesson.id); });
     $("#go-later").addEventListener("click", () => { closeModal(); openLesson(lesson.id); });
@@ -6286,8 +6345,8 @@ async function generateStudySet(lessonId, regenerate = false) {
   const cfg = appConfig || {};
   if (!cfg.has_text_key) {
     pm.close();
-    openModal(`<h2>AI key missing</h2><p>Set your <b>DeepSeek (text)</b> API key to generate notes, flashcards and quizzes. (A vision key is only needed for figure captions and OCR of scanned pages.)</p>
-      <div style="margin-top:16px"><button class="btn btn-primary" id="go-settings">Open Settings</button></div>`);
+    openModal(`<h2>还没设置 AI 密钥</h2><p>要生成知识点、闪卡和题目，需要先填 <b>DeepSeek（文本）</b> 的 API Key。视觉模型只在识别配图说明和扫描页 OCR 时才用到。</p>
+      <div style="margin-top:16px"><button class="btn btn-primary" id="go-settings">打开设置</button></div>`);
     $("#go-settings").addEventListener("click", () => { closeModal(); navigate("settings"); });
     return;
   }
@@ -6549,11 +6608,14 @@ async function generateStudySet(lessonId, regenerate = false) {
           if (point && point.slide != null) qq.slide = Number(point.slide);
         });
         const bad = [];
+        const seenStems = new Set(good.map((g) => normStem(g && g.question)));
         questions.forEach((qq, i) => {
-          if (quizQuestionInvalid(qq)) bad.push(want[i]);
-          else good.push(qq);
+          const key = normStem(qq && qq.question);
+          if (quizQuestionInvalid(qq) || (key && seenStems.has(key))) { bad.push(want[i]); return; }
+          if (key) seenStems.add(key);
+          good.push(qq);
         });
-        if (bad.length) pm.msg(`${bad.length} 道题解析自相矛盾，正在重出…`);
+        if (bad.length) pm.msg(`${bad.length} 道题不合格（解析矛盾 / 答案靠长度露馅），正在重出…`);
         want = bad;
       }
       return good;
@@ -6615,8 +6677,8 @@ async function generateStudySet(lessonId, regenerate = false) {
 /* ---------------- Independent single-component generation ---------------- */
 async function requireTextKey() {
   if ((appConfig || {}).has_text_key) return true;
-  openModal(`<h2>AI key missing</h2><p>Set your <b>DeepSeek (text)</b> API key first.</p>
-    <div style="margin-top:16px"><button class="btn btn-primary" id="go-settings">Open Settings</button></div>`);
+  openModal(`<h2>还没设置 AI 密钥</h2><p>请先填写 <b>DeepSeek (text)</b> API key first.</p>
+    <div style="margin-top:16px"><button class="btn btn-primary" id="go-settings">打开设置</button></div>`);
   $("#go-settings").addEventListener("click", () => { closeModal(); navigate("settings"); });
   return false;
 }
@@ -6987,7 +7049,13 @@ async function regenerateQuiz(lessonId) {
         if (point && point.slide != null) qq.slide = Number(point.slide);
       });
       const bad = [];
-      questions.forEach((qq, i) => { if (quizQuestionInvalid(qq)) bad.push(want[i]); else good.push(qq); });
+      const seenStems = new Set(good.map((g) => normStem(g && g.question)));
+      questions.forEach((qq, i) => {
+        const key = normStem(qq && qq.question);
+        if (quizQuestionInvalid(qq) || (key && seenStems.has(key))) { bad.push(want[i]); return; }
+        if (key) seenStems.add(key);
+        good.push(qq);
+      });
       want = bad;
     }
     return good;
@@ -7129,6 +7197,7 @@ function showFeynmanCard() {
           <div class="r-q">${mdInline(p.title)}</div>
           <div class="r-divider"></div>
           <div class="r-a">${mdFull(highlightTerms(explanationText(p.explanation), p.keyTerms))}</div>
+          ${keyTermChecklist(p)}
           ${figsHtml}
           ${cropFig}
           ${cropBtn}
@@ -7136,13 +7205,13 @@ function showFeynmanCard() {
         </div>
         <div class="sub" style="margin:14px 0 6px">How well did you explain it?</div>
         <div class="review-grade">
-          <button class="grade-btn grade-0" data-g="0"><span>Couldn't</span><span class="g-int">0%</span></button>
-          <button class="grade-btn grade-1" data-g="1"><span>Vague</span><span class="g-int">33%</span></button>
-          <button class="grade-btn grade-2" data-g="2"><span>Good</span><span class="g-int">67%</span></button>
-          <button class="grade-btn grade-3" data-g="3"><span>Excellent</span><span class="g-int">100%</span></button>
+          <button class="grade-btn grade-0" data-g="0"><span>完全没答上</span><span class="g-int">0%</span></button>
+          <button class="grade-btn grade-1" data-g="1"><span>说得含糊</span><span class="g-int">33%</span></button>
+          <button class="grade-btn grade-2" data-g="2"><span>说得清楚</span><span class="g-int">67%</span></button>
+          <button class="grade-btn grade-3" data-g="3"><span>讲得很透</span><span class="g-int">100%</span></button>
         </div>
       </div>
-      <button class="btn btn-primary" id="feynman-reveal" style="width:100%">Reveal answer <span style="opacity:.6;font-weight:400">(空格/↑↓)</span></button>
+      <button class="btn btn-primary" id="feynman-reveal" style="width:100%">显示答案 <span style="opacity:.6;font-weight:400">(空格/↑↓)</span></button>
     </div>`;
   $("#feynman-reveal").addEventListener("click", revealFeynman);
   $("#feynman-undo").addEventListener("click", () => {
@@ -7179,6 +7248,7 @@ function revealFeynman() {
   if (!feynmanSession || feynmanRevealed) return;
   feynmanRevealed = true;
   const rv = $("#feynman-reveal"); if (rv) rv.hidden = true;
+  bindKeyTermChecks($("#view"));
   const ans = $("#feynman-answer"); if (ans) ans.hidden = false;
 }
 
@@ -7215,10 +7285,10 @@ async function finishFeynman() {
   $("#view").innerHTML = `
     <div class="card" style="max-width:540px;margin:40px auto;text-align:center">
       <div class="empty-ico" style="font-size:44px">🎓</div>
-      <h2>Feynman self-test done</h2>
+      <h2>自测完成</h2>
       <p class="sub">${done} points reviewed — Excellent ${counts[3]} · Good ${counts[2]} · Vague ${counts[1]} · Couldn't ${counts[0]}</p>
       <p class="sub">These ratings now count toward your lesson mastery (30%).</p>
-      <button class="btn btn-primary" id="feynman-done">Back to lesson</button>
+      <button class="btn btn-primary" id="feynman-done">回到课程</button>
     </div>`;
   $("#feynman-done").addEventListener("click", () => openLesson(lessonId, "points"));
 }
@@ -7346,7 +7416,7 @@ function quizFeedbackHtml(lesson, q, ua, correct, showPick) {
   const pick = showPick && ua != null
     ? `你的答案：${mdInline((q.options || [])[ua] || "")} · 正确答案：${mdInline((q.options || [])[q.answer] || "")}<br>`
     : "";
-  return `<div class="q-expl ${correct ? "correct" : "wrong"}"><b>${correct ? "✓ Correct" : "✗ Incorrect"}</b><br>${pick}${mdFull(q.explanation || "")}</div>${figHtml}`;
+  return `<div class="q-expl ${correct ? "correct" : "wrong"}"><b>${correct ? "✓ 回答正确" : "✗ 回答错误"}</b><br>${pick}${mdFull(q.explanation || "")}</div>${figHtml}`;
 }
 
 /* Which slide should "本题相关 slide" open for this question?
@@ -7484,7 +7554,7 @@ async function finishQuiz() {
       <h2>${score} / ${quiz.questions.length}</h2>
       <p class="sub">${wrong.length} question${wrong.length === 1 ? "" : "s"} added to your mistake notebook.</p>
       <div style="display:flex;gap:10px;justify-content:center;margin-top:16px;flex-wrap:wrap">
-        <button class="btn btn-primary" id="r-back">Back to lesson</button>
+        <button class="btn btn-primary" id="r-back">回到课程</button>
         ${wrongCount ? `<button class="btn btn-accent" id="r-review-wrong">🕘 回看答错的 ${wrongCount} 题</button>` : ""}
         <button class="btn btn-ghost" id="r-review">🕘 回看这次作答</button>
         <button class="btn btn-ghost" id="r-mistakes">📕 Open mistakes</button>
@@ -7569,7 +7639,7 @@ function showReviewCard() {
   const remaining = reviewQueue.length - reviewPos;
   const head = `
     <div class="page-head">
-      <div class="title-wrap"><h1>🎯 Today's study</h1><p class="sub">${remaining} item${remaining === 1 ? "" : "s"} remaining · ${studyKindBadge(entry)}</p></div>
+      <div class="title-wrap"><h1>🎯 今日学习</h1><p class="sub">${remaining} 项待复习 · ${studyKindBadge(entry)}</p></div>
     </div>`;
 
   if (entry.kind === "card") {
@@ -7581,15 +7651,15 @@ function showReviewCard() {
       <div class="review-stage">
         <div class="flashcard" id="r-fc">
           ${lessonTitle ? `<div style="margin-bottom:12px"><span class="pill pill-gray">📚 ${escapeHtml(lessonTitle)}</span></div>` : ""}
-          <div class="card-label" id="r-label">Question</div>
+          <div class="card-label" id="r-label">题目</div>
           <div class="card-text" id="r-text"></div>
         </div>
-        <button class="btn btn-primary btn-lg" id="r-reveal" style="width:100%;margin-top:16px">Show answer <span style="opacity:.6;font-weight:400">(空格 / ↑↓)</span></button>
+        <button class="btn btn-primary btn-lg" id="r-reveal" style="width:100%;margin-top:16px">显示答案 <span style="opacity:.6;font-weight:400">(空格 / ↑↓)</span></button>
         <div id="r-grades" hidden>
           <div class="review-grade">
             <button class="grade-btn grade-0" data-g="0"><span>Again</span><span class="g-int">${intervalLabel(preview[0].interval)}</span><span class="g-key">1</span></button>
             <button class="grade-btn grade-1" data-g="1"><span>Hard</span><span class="g-int">${intervalLabel(preview[1].interval)}</span><span class="g-key">2</span></button>
-            <button class="grade-btn grade-2" data-g="2"><span>Good</span><span class="g-int">${intervalLabel(preview[2].interval)}</span><span class="g-key">3</span></button>
+            <button class="grade-btn grade-2" data-g="2"><span>说得清楚</span><span class="g-int">${intervalLabel(preview[2].interval)}</span><span class="g-key">3</span></button>
             <button class="grade-btn grade-3" data-g="3"><span>Easy</span><span class="g-int">${intervalLabel(preview[3].interval)}</span><span class="g-key">4</span></button>
           </div>
         </div>
@@ -7612,14 +7682,14 @@ function showReviewCard() {
           <div style="margin-bottom:10px"><span class="pill pill-gray">📚 ${escapeHtml(m.lessonTitle || reviewLessonMap[m.lessonId] || "")}</span> <span class="pill pill-red">📕 错题</span></div>
           <div style="font-weight:600;font-size:16px">${mdInline(m.question)}</div>
         </div>
-        <button class="btn btn-primary btn-lg" id="r-reveal" style="width:100%">Show answer <span style="opacity:.6;font-weight:400">(空格 / ↑↓)</span></button>
+        <button class="btn btn-primary btn-lg" id="r-reveal" style="width:100%">显示答案 <span style="opacity:.6;font-weight:400">(空格 / ↑↓)</span></button>
         <div id="r-grades" hidden style="margin-top:16px">
           ${userText != null ? `<div class="q-expl wrong" style="margin-bottom:8px"><b>✗ 你的答案:</b> ${escapeHtml(userText)}</div>` : ""}
           <div class="q-expl correct" style="margin-bottom:8px"><b>✓ 正确答案:</b> ${escapeHtml(correctText)}</div>
           ${m.explanation ? `<div class="q-expl">${mdFull(m.explanation)}</div>` : ""}
           <div class="review-grade" style="margin-top:16px">
-            <button class="grade-btn grade-0" data-ok="0"><span>Still wrong</span><span class="g-key">1</span></button>
-            <button class="grade-btn grade-2" data-ok="1"><span>Got it</span><span class="g-key">2</span></button>
+            <button class="grade-btn grade-0" data-ok="0"><span>还是不会</span><span class="g-key">1</span></button>
+            <button class="grade-btn grade-2" data-ok="1"><span>已经会了</span><span class="g-key">2</span></button>
           </div>
         </div>
         <div class="sub" style="text-align:center;margin-top:12px">空格/↑↓ 显示答案 · ←/1 还错 · →/2 对了</div>
@@ -7644,20 +7714,21 @@ function showReviewCard() {
         <div style="font-size:18px;font-weight:700">${mdInline(point.title)}</div>
         <div class="sub" style="margin-top:10px">🤔 用自己的话解释这个概念，像在教同学一样。然后显示答案并自评。</div>
       </div>
-      <button class="btn btn-primary btn-lg" id="r-reveal" style="width:100%">Show answer <span style="opacity:.6;font-weight:400">(空格 / ↑↓)</span></button>
+      <button class="btn btn-primary btn-lg" id="r-reveal" style="width:100%">显示答案 <span style="opacity:.6;font-weight:400">(空格 / ↑↓)</span></button>
       <div id="r-grades" hidden style="margin-top:16px">
         <div class="card" style="border-color:var(--brand)">
           <div class="r-a">${mdFull(highlightTerms(explanationText(point.explanation), point.keyTerms))}</div>
+          ${keyTermChecklist(point)}
           ${point.mnemonic ? `<div class="kp-mnemonic"><b>🧠 Mnemonic:</b> ${md(point.mnemonic)}</div>` : ""}
           ${point.supplement ? `<div class="kp-supplement"><b>💡 理解:</b> ${mdInline(point.supplement)}</div>` : ""}
           <div id="r-figs"></div>
         </div>
         <div class="sub" style="margin:14px 0 6px">你解释得怎么样？</div>
         <div class="review-grade">
-          <button class="grade-btn grade-0" data-g="0"><span>Couldn't</span><span class="g-int">${intervalLabel(preview[0].feynmanInterval != null ? preview[0].feynmanInterval : (preview[0].feynmanDue - Date.now()) / 86400000)}</span><span class="g-key">1</span></button>
-          <button class="grade-btn grade-1" data-g="1"><span>Vague</span><span class="g-int">${intervalLabel(preview[1].feynmanInterval != null ? preview[1].feynmanInterval : (preview[1].feynmanDue - Date.now()) / 86400000)}</span><span class="g-key">2</span></button>
-          <button class="grade-btn grade-2" data-g="2"><span>Good</span><span class="g-int">${intervalLabel(preview[2].feynmanInterval != null ? preview[2].feynmanInterval : (preview[2].feynmanDue - Date.now()) / 86400000)}</span><span class="g-key">3</span></button>
-          <button class="grade-btn grade-3" data-g="3"><span>Excellent</span><span class="g-int">${intervalLabel(preview[3].feynmanInterval != null ? preview[3].feynmanInterval : (preview[3].feynmanDue - Date.now()) / 86400000)}</span><span class="g-key">4</span></button>
+          <button class="grade-btn grade-0" data-g="0"><span>完全没答上</span><span class="g-int">${intervalLabel(preview[0].feynmanInterval != null ? preview[0].feynmanInterval : (preview[0].feynmanDue - Date.now()) / 86400000)}</span><span class="g-key">1</span></button>
+          <button class="grade-btn grade-1" data-g="1"><span>说得含糊</span><span class="g-int">${intervalLabel(preview[1].feynmanInterval != null ? preview[1].feynmanInterval : (preview[1].feynmanDue - Date.now()) / 86400000)}</span><span class="g-key">2</span></button>
+          <button class="grade-btn grade-2" data-g="2"><span>说得清楚</span><span class="g-int">${intervalLabel(preview[2].feynmanInterval != null ? preview[2].feynmanInterval : (preview[2].feynmanDue - Date.now()) / 86400000)}</span><span class="g-key">3</span></button>
+          <button class="grade-btn grade-3" data-g="3"><span>讲得很透</span><span class="g-int">${intervalLabel(preview[3].feynmanInterval != null ? preview[3].feynmanInterval : (preview[3].feynmanDue - Date.now()) / 86400000)}</span><span class="g-key">4</span></button>
         </div>
       </div>
       <div class="sub" style="text-align:center;margin-top:12px">空格/↑↓ 显示答案 · 1-4 或 ←→ 评分</div>
@@ -7685,6 +7756,9 @@ async function loadReviewPointFigure(lessonId, slideIdx, containerId) {
 }
 
 function flipReviewCard() {
+  // Reveal can be entered from the card, the point and the mistake paths; wire the
+  // self-check list wherever it ended up in the DOM.
+  setTimeout(() => bindKeyTermChecks($("#view")), 0);
   if (reviewPos >= reviewQueue.length) return;
   const entry = reviewQueue[reviewPos];
   if (entry.kind === "card") {
@@ -7695,7 +7769,7 @@ function flipReviewCard() {
     const rv = $("#r-reveal");
     const g = $("#r-grades");
     if (reviewFlipped) {
-      if (label) label.textContent = "Answer";
+      if (label) label.textContent = "答案";
       t.className = "card-text answer";
       t.innerHTML = `<div class="r-q">${mdFull(card.front)}</div><div class="r-divider"></div><div class="r-a">${mdFull(card.back)}</div>`;
       if (rv) rv.hidden = true;
@@ -7815,7 +7889,7 @@ async function renderMistakes() {
   const due = active.filter((m) => m.nextReview <= now);
   $("#view").innerHTML = `
     <div class="page-head">
-      <div class="title-wrap"><h1>Mistake notebook</h1><p class="sub">${active.length} active · ${mistakes.length - active.length} mastered · ${due.length} due now</p></div>
+      <div class="title-wrap"><h1>错题本</h1><p class="sub">${active.length} active · ${mistakes.length - active.length} mastered · ${due.length} due now</p></div>
       <button class="btn btn-danger" id="btn-mr" ${due.length ? "" : "disabled"}>📕 Review due (${due.length})</button>
     </div>
     <div class="grid">${active.length ? active.sort((a, b) => a.nextReview - b.nextReview).map(mistakeRow).join("") : emptyState("📕", "No active mistakes — nice work!")}</div>
@@ -7874,19 +7948,19 @@ function showMistakeCard() {
   const m = mistakeQueue[mistakePos];
   mistakeRevealed = false;
   $("#view").innerHTML = `
-    <div class="page-head"><div class="title-wrap"><h1>Mistake review</h1><p class="sub">${mistakePos + 1} of ${mistakeQueue.length}</p></div></div>
+    <div class="page-head"><div class="title-wrap"><h1>错题复习</h1><p class="sub">${mistakePos + 1} of ${mistakeQueue.length}</p></div></div>
     <div class="review-stage">
       <div class="card" style="margin-bottom:14px"><div style="font-weight:600;font-size:16px">${mdInline(m.question)}</div></div>
       <div id="mr-reveal" hidden>
-        <div class="q-expl correct" style="margin-bottom:12px"><b>✓ Correct answer:</b> ${mdInline(m.options ? m.options[m.answer] : m.answer)}</div>
+        <div class="q-expl correct" style="margin-bottom:12px"><b>✓ 回答正确 answer:</b> ${mdInline(m.options ? m.options[m.answer] : m.answer)}</div>
         ${m.explanation ? `<div class="q-expl">${mdFull(m.explanation)}</div>` : ""}
         <button class="btn btn-ghost btn-sm" id="mr-goto" style="margin-top:10px">📖 看对应的知识点${m.pointTitle ? `：${escapeHtml(m.pointTitle)}` : ""}</button>
         <div class="review-grade" style="margin-top:16px">
-          <button class="grade-btn grade-0" id="mr-miss">Still wrong</button>
+          <button class="grade-btn grade-0" id="mr-miss">还是不会</button>
           <button class="grade-btn grade-2" id="mr-got">Got it</button>
         </div>
       </div>
-      <button class="btn btn-primary" id="mr-show" style="width:100%">Show answer <span style="opacity:.6;font-weight:400">(空格/↑↓ · ←错 →对)</span></button>
+      <button class="btn btn-primary" id="mr-show" style="width:100%">显示答案 <span style="opacity:.6;font-weight:400">(空格/↑↓ · ←错 →对)</span></button>
     </div>`;
   $("#mr-show").addEventListener("click", revealMistake);
   $("#mr-goto").addEventListener("click", () => openQuestionSource(m.lessonId, m));
@@ -7917,7 +7991,7 @@ function finishMistakeReview() {
   $("#view").innerHTML = `
     <div class="card" style="max-width:520px;margin:40px auto;text-align:center">
       <div class="empty-ico" style="font-size:44px">📕</div>
-      <h2>Mistake review done</h2>
+      <h2>错题复习完成</h2>
       <p class="sub">${mistakeStats.shown} reviewed — Got it ${mistakeStats.got} · Still wrong ${mistakeStats.missed}</p>
       <button class="btn btn-primary" id="m-done">Done</button>
     </div>`;
@@ -7987,18 +8061,18 @@ async function renderProgress() {
 
   $("#view").innerHTML = `
     <div class="page-head">
-      <div class="title-wrap"><h1>Progress</h1><p class="sub">Study time & mastery at a glance.</p></div>
+      <div class="title-wrap"><h1>进度</h1><p class="sub">学习时长与掌握度一览。</p></div>
     </div>
 
     <div class="grid grid-4" style="margin-bottom:20px">
-      <div class="card stat"><div class="stat-num">${fmtDuration(t.todaySec)}</div><div class="stat-label">Studied today</div></div>
+      <div class="card stat"><div class="stat-num">${fmtDuration(t.todaySec)}</div><div class="stat-label">今日学习时长</div></div>
       <div class="card stat"><div class="stat-num">${fmtDuration(t.weekSec)}</div><div class="stat-label">Last 7 days</div></div>
-      <div class="card stat"><div class="stat-num">${fmtDuration(t.allSec)}</div><div class="stat-label">All time</div></div>
-      <div class="card stat"><div class="stat-num">🔥 ${t.streak}</div><div class="stat-label">Day streak</div></div>
+      <div class="card stat"><div class="stat-num">${fmtDuration(t.allSec)}</div><div class="stat-label">累计</div></div>
+      <div class="card stat"><div class="stat-num">🔥 ${t.streak}</div><div class="stat-label">连续天数</div></div>
     </div>
 
     <div class="card" style="margin-bottom:20px">
-      <h3>Last 7 days</h3>
+      <h3>最近 7 天</h3>
       <div class="chart">${t.series.map((s) => `
         <div class="chart-col">
           <div class="chart-val">${s.sec ? fmtDuration(s.sec) : ""}</div>
@@ -8009,29 +8083,29 @@ async function renderProgress() {
 
     <div class="grid grid-2" style="margin-bottom:20px">
       <div class="card">
-        <h3>Time by activity</h3>
+        <h3>时间分布</h3>
         ${Object.keys(ACTIVITY_LABELS).map((a) => `
           <div class="break-row">
             <span class="break-label">${ACTIVITY_LABELS[a]}</span>
             <div class="progress-bar" style="flex:1;height:8px"><div class="progress-fill" style="width:${t.allSec ? Math.round((t.byActivity[a] || 0) / t.allSec * 100) : 0}%"></div></div>
             <span class="sub" style="width:56px;text-align:right">${fmtDuration(t.byActivity[a] || 0)}</span>
           </div>`).join("")}
-        <div class="sub" style="margin-top:4px">Only counts time while the tab is visible and you're actively studying.</div>
+        <div class="sub" style="margin-top:4px">只在页面可见、且你确实在操作时累计。</div>
       </div>
       <div class="card">
-        <h3>Mastery overview</h3>
-        <div class="stat" style="margin-bottom:14px"><div class="stat-num">${matureCards}<span class="sub" style="font-size:16px"> / ${cards.length}</span></div><div class="stat-label">cards mastered (interval ≥ 21 days)</div></div>
-        <div class="stat" style="margin-bottom:14px"><div class="stat-num">${masteredLessons}<span class="sub" style="font-size:16px"> / ${lessons.length}</span></div><div class="stat-label">lessons ≥ 80% mastered</div></div>
-        <div class="stat"><div class="stat-num">${quizzes.length}</div><div class="stat-label">quiz attempts</div></div>
+        <h3>掌握度概览</h3>
+        <div class="stat" style="margin-bottom:14px"><div class="stat-num">${matureCards}<span class="sub" style="font-size:16px"> / ${cards.length}</span></div><div class="stat-label">已掌握卡片（间隔 ≥ 21 天）</div></div>
+        <div class="stat" style="margin-bottom:14px"><div class="stat-num">${masteredLessons}<span class="sub" style="font-size:16px"> / ${lessons.length}</span></div><div class="stat-label">掌握度 ≥ 80% 的课程</div></div>
+        <div class="stat"><div class="stat-num">${quizzes.length}</div><div class="stat-label">测验次数</div></div>
       </div>
     </div>
 
     ${sessionCard}
 
     <div class="card">
-      <h3>Per-lesson mastery</h3>
-      <div class="sub" style="margin-bottom:6px">Click a lesson to open it. Mastery = 30% Feynman points + 40% mature cards + 30% best quiz score.</div>
-      ${lp.length ? lp.sort((a, b) => b.lesson.createdAt - a.lesson.createdAt).map(lpRow).join("") : '<div class="sub">No lessons yet.</div>'}
+      <h3>各课掌握度</h3>
+      <div class="sub" style="margin-bottom:6px">点课程即可打开。掌握度 = 30% 知识点自测 + 40% 成熟卡片 + 30% 最好一次测验成绩。</div>
+      ${lp.length ? lp.sort((a, b) => b.lesson.createdAt - a.lesson.createdAt).map(lpRow).join("") : '<div class="sub">还没有课程。</div>'}
     </div>`;
 
   $("#view").querySelectorAll(".lp-row").forEach((el) => el.addEventListener("click", () => openLesson(el.dataset.id)));
@@ -8065,7 +8139,7 @@ async function buildSessionCard() {
       <span class="break-label" style="width:92px">${s.date === today ? "今天" : s.date}</span>
       <span style="width:168px">${clockOf(s.start)} – ${end}</span>
       <div class="progress-bar" style="flex:1;height:8px"><div class="progress-fill" style="width:${Math.min(100, Math.round((s.seconds || 0) / 3600 * 100))}%"></div></div>
-      <span class="sub" style="width:150px;text-align:right">活跃 ${fmtDuration(s.seconds || 0)} · 跨度 ${spanMin} 分钟</span>
+      <span class="sub" style="width:150px;text-align:right">使用 ${fmtDuration(s.seconds || 0)} · 跨度 ${spanMin} 分钟</span>
     </div>`;
   }).join("");
   return `<div class="card" style="margin-bottom:20px">
@@ -8075,20 +8149,20 @@ async function buildSessionCard() {
       <div class="card stat"><div class="stat-num">${started}</div><div class="stat-label">今天开始于 Started today</div></div>
       <div class="card stat"><div class="stat-num">${lastSeen}</div><div class="stat-label">最近互动 Last interaction</div></div>
       <div class="card stat"><div class="stat-num">${todaySessions.length}</div><div class="stat-label">今天的会话数 Sessions</div></div>
-      <div class="card stat"><div class="stat-num">${fmtDuration(activeToday)}</div><div class="stat-label">今天活跃时间 Active</div></div>
+      <div class="card stat"><div class="stat-num">${fmtDuration(activeToday)}</div><div class="stat-label">今天使用时长（含浏览）</div></div>
     </div>
-    <div class="sub" style="margin-bottom:6px">间隔超过 5 分钟没有互动就算新的一次会话；"活跃"只在页面可见且你在操作时累加。</div>
+    <div class="sub" style="margin-bottom:6px">间隔超过 5 分钟没有互动就算新的一次会话；"使用时长"在页面可见且你有互动时累加，页面挂着不动不计。<br>它与上面「今日学习时长」不同：那个只在正式复习（阅读/复习/做题/错题）时累计。</div>
     ${rows}
   </div>`;
 }
 
 /* ---------------- Search ---------------- */
 const TYPE_META = {
-  lesson: { label: "Lessons", ico: "📚", tab: "points" },
-  point: { label: "Key points", ico: "✨", tab: "points" },
-  card: { label: "Flashcards", ico: "🃏", tab: "cards" },
-  question: { label: "Quiz questions", ico: "📝", tab: "quiz" },
-  mistake: { label: "Mistakes", ico: "📕", tab: "quiz" },
+  lesson: { label: "📚 课程", ico: "📚", tab: "points" },
+  point: { label: "✨ 知识点", ico: "✨", tab: "points" },
+  card: { label: "🃏 闪卡", ico: "🃏", tab: "cards" },
+  question: { label: "📝 题目", ico: "📝", tab: "quiz" },
+  mistake: { label: "📕 错题", ico: "📕", tab: "quiz" },
 };
 
 function buildSearchIndex(lessons, cards, quizzes, mistakes) {
@@ -9320,14 +9394,14 @@ async function renderSearch() {
       <input type="text" id="search-q" placeholder="Search anything… e.g. “heart failure”, “Troponin”, “pharmacology”" autocomplete="off" style="width:100%;padding:13px 15px;border:1.5px solid var(--border);border-radius:11px;font-size:15px;margin-bottom:12px">
       <div style="display:flex;gap:10px;flex-wrap:wrap">
         <select id="search-type" class="search-select">
-          <option value="all">All types</option>
+          <option value="all">全部类型</option>
           ${Object.entries(TYPE_META).map(([k, v]) => `<option value="${k}">${v.label}</option>`).join("")}
         </select>
         <select id="search-imp" class="search-select">
-          <option value="all">All importance</option>
-          <option value="high">High yield</option>
+          <option value="all">全部重要度</option>
+          <option value="high">高频</option>
           <option value="medium">Medium</option>
-          <option value="low">Low yield</option>
+          <option value="low">低频</option>
         </select>
         <select id="search-tag" class="search-select" ${allTags.length ? "" : "disabled"}>
           <option value="all">${allTags.length ? "All tags" : "No tags yet"}</option>
@@ -9611,7 +9685,7 @@ async function renderSettings() {
       </div>`;
   };
   $("#view").innerHTML = `
-    <div class="page-head"><div class="title-wrap"><h1>Settings</h1><p class="sub">Configure your AI providers. Everything is stored on the server and synced across your devices.</p></div></div>
+    <div class="page-head"><div class="title-wrap"><h1>设置</h1><p class="sub">在这里配置 AI 服务。所有内容都存在服务器上，换设备登录也能看到。</p></div></div>
     <div class="grid grid-2">
       <div class="card"><h3>🧠 Text model (notes / cards / quiz)</h3><p class="sub" style="margin-bottom:14px">当前: <b>${escapeHtml(cfg.text?.model || "未设置")}</b> · 用于提炼知识点/闪卡/题目</p>${field("text", "Base URL")}</div>
       <div class="card"><h3>🖼 Vision model (figures) — 可选</h3>
@@ -9672,25 +9746,25 @@ async function renderSettings() {
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:6px">
         <input type="number" id="goal-min" min="1" max="600" value="${getGoalMinutes()}" style="width:110px;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px">
         <span class="sub">minutes of focused study per day</span>
-        <button class="btn btn-primary btn-sm" id="btn-goal">Save goal</button>
+        <button class="btn btn-primary btn-sm" id="btn-goal">保存目标</button>
         <span class="sub" id="goal-msg"></span>
       </div>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px">
         <input type="number" id="new-per-day" min="1" max="200" value="${getNewCardsPerDay()}" style="width:110px;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px">
         <span class="sub">new cards introduced per day (prevents overload)</span>
-        <button class="btn btn-primary btn-sm" id="btn-newperday">Save limit</button>
+        <button class="btn btn-primary btn-sm" id="btn-newperday">保存上限</button>
         <span class="sub" id="newperday-msg"></span>
       </div>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px">
         <input type="number" id="autosave-sec" min="5" max="600" value="${getAutoSaveInterval()}" style="width:110px;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px">
         <span class="sub">seconds between auto-saves of the page you're on</span>
-        <button class="btn btn-primary btn-sm" id="btn-autosave">Save interval</button>
+        <button class="btn btn-primary btn-sm" id="btn-autosave">保存间隔</button>
         <span class="sub" id="autosave-msg"></span>
       </div>
       <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px">
         <input type="number" id="new-points-per-day" min="1" max="200" value="${getNewPointsPerDay()}" style="width:110px;padding:9px 11px;border:1.5px solid var(--border);border-radius:9px;font-size:14px">
         <span class="sub">new knowledge points introduced per day</span>
-        <button class="btn btn-primary btn-sm" id="btn-newpointsperday">Save limit</button>
+        <button class="btn btn-primary btn-sm" id="btn-newpointsperday">保存上限</button>
         <span class="sub" id="newpointsperday-msg"></span>
       </div>
     </div>
@@ -9712,9 +9786,9 @@ async function renderSettings() {
       </div>
     </div>
     <div class="card" style="margin-top:26px">
-      <h3>How it works</h3>
+      <h3>怎么用</h3>
       <ul class="sub" style="padding-left:20px;line-height:1.8">
-        <li>Upload a <b>.pptx</b> or <b>.pdf</b> — it's parsed and stored on the server (SQLite), synced across your devices.</li>
+        <li>上传 <b>.pptx</b> 或 <b>.pdf</b> —— 会解析后存到服务器（SQLite），换设备也能看到。</li>
         <li>“Generate study set” runs entirely on DeepSeek: key points, active-recall flashcards, MCQ quizzes, and figure captions inferred from the slide context.</li>
         <li><b>今日学习</b> 把到期卡片、知识点和错题合并成一个队列；新卡片和新知识点受每日上限控制，避免一次过载。知识点自评也按 1/3/7/14/30 天间隔重复出现。</li>
       </ul>
@@ -9745,11 +9819,11 @@ async function renderSettings() {
       <p class="sub" style="margin-bottom:14px">${appConfig?.open
         ? "本机模式：当前没有密码，打开网址即可使用；同一网络里的其他人也一样。设置一个密码后，才需要登录。"
         : "Change your login password. You'll be asked to log in again on other devices."}</p>
-      ${appConfig?.open ? "" : '<div class="field"><label>Current password</label><input type="password" id="pw-old" placeholder="Current password"></div>'}
+      ${appConfig?.open ? "" : '<div class="field"><label>当前密码</label><input type="password" id="pw-old" placeholder="Current password"></div>'}
       <div class="field"><label>New password (min 8 characters)</label><input type="password" id="pw-new" placeholder="New password"></div>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-primary" id="btn-pw">${appConfig?.open ? "设置密码" : "Update password"}</button>
-        ${appConfig?.open ? "" : '<button class="btn btn-ghost" id="btn-logout2">🚪 Log out</button>'}
+        ${appConfig?.open ? "" : '<button class="btn btn-ghost" id="btn-logout2">🚪 退出登录</button>'}
         <span class="sub" id="pw-msg"></span>
       </div>
     </div>`;

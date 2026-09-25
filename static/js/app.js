@@ -1670,7 +1670,7 @@ const QUIZ_META = new RegExp(QUIZ_JUNK_STEM.join("|"), "i");
  * bank cleaner reads this same literal and, where the offending option is only a
  * distractor, removes just that option instead of the whole question. */
 const QUIZ_BANNED_OPTION = /all\s+of\s+the\s+above|none\s+of\s+the\s+above|\bboth\s+a\s+and\s+b\b|以上(都|均)对?|以上都不是|a\s*和\s*b\s*都/i;
-function quizQuestionInvalid(q) {
+function quizQuestionInvalid(q, lenient = false) {
   if (!q || !Array.isArray(q.options) || q.options.length < 2) return true;
   const n = q.options.length;
   const ans = Number(q.answer);
@@ -1681,7 +1681,7 @@ function quizQuestionInvalid(q) {
   // picks the longest option scored better than half. A model instruction that is
   // ignored this consistently is a job for a deterministic check, so a question
   // whose correct option stands out by length is rejected and re-asked.
-  if (n >= 3) {
+  if (n >= 3 && !lenient) {
     const lens = q.options.map((o) => String(o || "").trim().length).sort((a, b) => a - b);
     const mid = lens[Math.floor(lens.length / 2)];
     const mine = String(q.options[ans] || "").trim().length;
@@ -6607,11 +6607,16 @@ async function generateStudySet(lessonId, regenerate = false) {
           const point = matchQuestionToPoint(qq, want) || want[i];
           if (point && point.slide != null) qq.slide = Number(point.slide);
         });
+        // The last attempt is judged leniently: a question whose options merely vary
+        // in length is worth keeping, because rejecting it leaves that knowledge point
+        // with no question at all (one regenerated bank lost 9 of 80 that way).
+        const last = attempt === 2;
         const bad = [];
         const seenStems = new Set(good.map((g) => normStem(g && g.question)));
         questions.forEach((qq, i) => {
           const key = normStem(qq && qq.question);
-          if (quizQuestionInvalid(qq) || (key && seenStems.has(key))) { bad.push(want[i]); return; }
+          const dup = !last && key && seenStems.has(key);
+          if (quizQuestionInvalid(qq, last) || dup) { bad.push(want[i]); return; }
           if (key) seenStems.add(key);
           good.push(qq);
         });
@@ -7048,11 +7053,13 @@ async function regenerateQuiz(lessonId) {
         const point = matchQuestionToPoint(qq, want) || want[i];
         if (point && point.slide != null) qq.slide = Number(point.slide);
       });
+      const last = attempt === 2;
       const bad = [];
       const seenStems = new Set(good.map((g) => normStem(g && g.question)));
       questions.forEach((qq, i) => {
         const key = normStem(qq && qq.question);
-        if (quizQuestionInvalid(qq) || (key && seenStems.has(key))) { bad.push(want[i]); return; }
+        const dup = !last && key && seenStems.has(key);
+        if (quizQuestionInvalid(qq, last) || dup) { bad.push(want[i]); return; }
         if (key) seenStems.add(key);
         good.push(qq);
       });

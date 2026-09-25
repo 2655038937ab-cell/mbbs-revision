@@ -762,23 +762,116 @@ function flushActivity() {
   }
 }
 
+/* ---------------- Interaction sessions ----------------
+ * "When did I start, and when did I last touch this?" A session is one run of
+ * interaction: a gap longer than SESSION_GAP_MS starts a new one, so an afternoon of
+ * study with a lunch break reads as two sessions rather than one nine-hour blob.
+ * Kept in its own store, so the per-activity totals in studyLog are untouched.
+ */
+const SESSION_GAP_MS = 5 * 60 * 1000;   // no interaction for 5 min -> new session
+const SESSION_KEEP = 400;               // newest sessions kept; older ones trimmed
+let currentSession = null;
+let sessionWriteAt = 0;
+
+function sessionBegin(now) {
+  currentSession = { id: "s" + now, date: dayKey(new Date(now)), start: now, lastSeen: now, seconds: 0 };
+  return currentSession;
+}
+
+/* A real interaction: extends the current session, or starts a new one when the
+ * previous interaction is further back than SESSION_GAP_MS. Writes are throttled —
+ * one record rewritten in place — so a long study session costs a handful of small
+ * PUTs instead of one per click. */
+function sessionTouch(force = false) {
+  if (api.isTrialMode()) return;         // guests have no account to log against
+  const now = Date.now();
+  if (!currentSession || now - currentSession.lastSeen > SESSION_GAP_MS) {
+    if (currentSession) sessionSave(currentSession, true);
+    sessionBegin(now);
+  }
+  currentSession.lastSeen = now;
+  if (force || now - sessionWriteAt > 20000) {
+    sessionWriteAt = now;
+    sessionSave(currentSession, false);
+  }
+}
+
+/* The 30 s heartbeat and the moment the tab is hidden. It must NOT move
+ * "last interaction" forward: a heartbeat is not the user, and treating it as one
+ * would keep a session alive all afternoon. It persists progress, and closes the
+ * session once the gap has passed so the next interaction opens a fresh one. */
+function sessionHeartbeat() {
+  if (!currentSession || api.isTrialMode()) return;
+  const now = Date.now();
+  if (now - currentSession.lastSeen > SESSION_GAP_MS) {
+    sessionSave(currentSession, true);
+    currentSession = null;
+    return;
+  }
+  sessionSave(currentSession, false);
+}
+
+function sessionSave(session, finished) {
+  const s = session || currentSession;
+  if (!s || api.isTrialMode()) return;
+  db.put("sessions", {
+    id: s.id, date: s.date, start: s.start, lastSeen: s.lastSeen,
+    seconds: Math.round(s.seconds), finished: !!finished,
+  }).catch(() => {});
+  if (finished) trimSessions();
+}
+
+function trimSessions() {
+  db.getAll("sessions").then((all) => {
+    if (!all || all.length <= SESSION_KEEP) return;
+    return Promise.all(all.sort((a, b) => (b.start || 0) - (a.start || 0))
+      .slice(SESSION_KEEP).map((s) => db.delete("sessions", s.id)));
+  }).catch(() => {});
+}
+
+function MINS_AGO(m) { return m < 60 ? m + " 分钟前" : Math.floor(m / 60) + " 小时前"; }
+function clockOf(ts) { return new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }); }
+
+// "本次会话 14:03 开始 · 最近互动 2 分钟前"
+function sessionLiveText(now = Date.now()) {
+  if (!currentSession) return "";
+  const mins = Math.max(0, Math.round((now - currentSession.lastSeen) / 60000));
+  return `本次会话 ${clockOf(currentSession.start)} 开始 · 最近互动 ${mins === 0 ? "刚刚" : MINS_AGO(mins)}`;
+}
+
+// The live line on the Progress page, refreshed by the 30 s heartbeat.
+function renderSessionLive() {
+  const el = document.getElementById("sess-live");
+  if (!el) return;
+  const txt = sessionLiveText();
+  el.textContent = txt;
+  el.style.display = txt ? "" : "none";
+}
+
 function startTimeTracking() {
   // Any real interaction (mouse/keyboard/scroll/touch) marks the user as active.
-  const markActive = () => { lastInteraction = Date.now(); };
+  const markActive = () => { lastInteraction = Date.now(); sessionTouch(); };
   ["pointermove", "pointerdown", "keydown", "scroll", "touchstart", "wheel"].forEach((ev) => {
     document.addEventListener(ev, markActive, { passive: true });
   });
   setInterval(() => {
     const now = Date.now();
     const active = currentActivity && document.visibilityState === "visible" && (now - lastInteraction) < IDLE_LIMIT_MS;
-    if (active) activitySeconds += (now - lastTick) / 1000;
+    if (active) {
+      activitySeconds += (now - lastTick) / 1000;
+      // Same "visible and actually studying" rule as the activity totals, so the
+      // session's active time cannot disagree with the daily figure.
+      if (currentSession) currentSession.seconds += (now - lastTick) / 1000;
+    }
     lastTick = now;
   }, 1000);
-  setInterval(() => { flushActivity(); checkGoalCelebration(); }, 30000);
+  setInterval(() => { flushActivity(); sessionHeartbeat(); renderSessionLive(); checkGoalCelebration(); }, 30000);
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") flushActivity();
+    if (document.visibilityState === "hidden") { flushActivity(); sessionSave(currentSession, false); }
+    else sessionTouch();
   });
-  window.addEventListener("beforeunload", flushActivity);
+  window.addEventListener("beforeunload", () => { flushActivity(); sessionSave(currentSession, true); });
+  sessionTouch(true);   // opening the page starts the session
 }
 
 function getGoalMinutes() {
@@ -7884,6 +7977,7 @@ async function renderProgress() {
     db.getAllLite("lessons"), db.getAllLite("cards"), db.getAll("quizzes"), db.getAll("studyLog"),
   ]);
   const t = computeTimeStats(log);
+  const sessionCard = await buildSessionCard();
 
   // per-lesson mastery (Feynman points + cards + quiz)
   const mastery = computeMasteryMap(lessons, cards, quizzes);
@@ -7932,6 +8026,8 @@ async function renderProgress() {
       </div>
     </div>
 
+    ${sessionCard}
+
     <div class="card">
       <h3>Per-lesson mastery</h3>
       <div class="sub" style="margin-bottom:6px">Click a lesson to open it. Mastery = 30% Feynman points + 40% mature cards + 30% best quiz score.</div>
@@ -7939,6 +8035,51 @@ async function renderProgress() {
     </div>`;
 
   $("#view").querySelectorAll(".lp-row").forEach((el) => el.addEventListener("click", () => openLesson(el.dataset.id)));
+  renderSessionLive();
+}
+
+/* Session log card: when you started today, when you last touched the site, and the
+ * recent sessions behind it. */
+async function buildSessionCard() {
+  const all = (await db.getAll("sessions").catch(() => [])) || [];
+  const today = dayKey(new Date());
+  const sessions = all.slice().sort((a, b) => (b.start || 0) - (a.start || 0));
+  const todaySessions = sessions.filter((s) => s.date === today).sort((a, b) => (a.start || 0) - (b.start || 0));
+  if (!sessions.length) {
+    return `<div class="card" style="margin-bottom:20px">
+      <h3>⏱ Session log 时间记录</h3>
+      <div class="sub">还没有记录。打开页面开始互动后，这里会记下每次会话的开始时间、最后一次互动时间和时长。</div>
+    </div>`;
+  }
+  const firstToday = todaySessions[0];
+  const lastToday = todaySessions[todaySessions.length - 1];
+  const activeToday = todaySessions.reduce((n, s) => n + (s.seconds || 0), 0);
+  const openNow = currentSession && currentSession.date === today ? currentSession : null;
+  const started = firstToday ? clockOf(firstToday.start) : "—";
+  const lastSeen = openNow ? clockOf(openNow.lastSeen) : (lastToday ? clockOf(lastToday.lastSeen) : "—");
+  const rows = sessions.slice(0, 14).map((s) => {
+    const live = !!(openNow && openNow.id === s.id);
+    const end = live ? "进行中 ●" : clockOf(s.lastSeen);
+    const spanMin = Math.max(1, Math.round(((s.lastSeen || s.start) - s.start) / 60000));
+    return `<div class="break-row">
+      <span class="break-label" style="width:92px">${s.date === today ? "今天" : s.date}</span>
+      <span style="width:168px">${clockOf(s.start)} – ${end}</span>
+      <div class="progress-bar" style="flex:1;height:8px"><div class="progress-fill" style="width:${Math.min(100, Math.round((s.seconds || 0) / 3600 * 100))}%"></div></div>
+      <span class="sub" style="width:150px;text-align:right">活跃 ${fmtDuration(s.seconds || 0)} · 跨度 ${spanMin} 分钟</span>
+    </div>`;
+  }).join("");
+  return `<div class="card" style="margin-bottom:20px">
+    <h3>⏱ Session log 时间记录</h3>
+    <div class="sub" id="sess-live" style="margin-bottom:10px"></div>
+    <div class="grid grid-4" style="margin-bottom:14px">
+      <div class="card stat"><div class="stat-num">${started}</div><div class="stat-label">今天开始于 Started today</div></div>
+      <div class="card stat"><div class="stat-num">${lastSeen}</div><div class="stat-label">最近互动 Last interaction</div></div>
+      <div class="card stat"><div class="stat-num">${todaySessions.length}</div><div class="stat-label">今天的会话数 Sessions</div></div>
+      <div class="card stat"><div class="stat-num">${fmtDuration(activeToday)}</div><div class="stat-label">今天活跃时间 Active</div></div>
+    </div>
+    <div class="sub" style="margin-bottom:6px">间隔超过 5 分钟没有互动就算新的一次会话；"活跃"只在页面可见且你在操作时累加。</div>
+    ${rows}
+  </div>`;
 }
 
 /* ---------------- Search ---------------- */

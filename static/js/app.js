@@ -1391,32 +1391,49 @@ ${ptext}`;
  */
 function remapOptionLetters(text, order, count) {
   const last = String.fromCharCode(64 + Math.min(count, 26));
-  const LETTER = "[A-" + last + "]";
+  const L = "[A-" + last + "]";
   // old letter -> new letter
   const map = {};
   for (let newI = 0; newI < order.length; newI++) {
     map[String.fromCharCode(65 + order[newI])] = String.fromCharCode(65 + newI);
   }
   const swap = (letter) => map[letter] || letter;
-  let out = String(text);
-  // "B正确" / "B项错误" / "B是正确答案". The verdict word must be a real one:
-  // a bare 是/对/为 would also match prose like "维生素D是脂溶性…", which is not
-  // an option reference at all.
-  out = out.replace(new RegExp("(^|[^A-Za-z0-9])(" + LETTER + ")(?=\\s*(?:项)?\\s*(?:正确|错误|不正确|不对|符合|不符))", "g"),
-    (m, pre, L) => pre + swap(L));
-  out = out.replace(new RegExp("(^|[^A-Za-z0-9])(" + LETTER + ")(?=\\s*[对错](?=[，。；：、\\s)）]|$))", "g"),
-    (m, pre, L) => pre + swap(L));
-  out = out.replace(new RegExp("(^|[^A-Za-z0-9])(" + LETTER + ")(?=\\s*是\\s*(?:正确|错误|对|错|答案))", "g"),
-    (m, pre, L) => pre + swap(L));
-  // "选项B" — the only form the generator is allowed to use for a bare option
-  // reference, and the only one that is always safe to remap.
-  out = out.replace(new RegExp("(选项\\s*)(" + LETTER + ")", "g"), (m, pre, L) => pre + swap(L));
-  // Bare letters in lists are NOT remapped any more. Chemical symbols sit in the
-  // same A–E range separated by the same 、/，, so the old list rules rewrote real
-  // chemistry: "原子——Cα、O、C、N、H、Cα——共面" came back as "Cα、O、D、N、H、Bα".
-  // The generator now refers to options as 选项A / 选项B (see mcqPrompt), which the
-  // rule above covers.
-  return out;
+  // ONE regex, ONE mapping per occurrence. Running several rules in sequence over the
+  // same text remapped the same letter again and again ("选项A正确" ended up as
+  // "选项D正确"), the remapped explanation then disagreed with the shuffled answer,
+  // and shuffleQuizOptions undid the shuffle — restoring the generator's habit of
+  // putting the correct option first, which is how a whole bank ended up all-"A".
+  //
+  // Only text that clearly refers to an option is touched: a 选项 prefix, a letter
+  // before 正确/错误/符合, a letter before 对/错, or a letter before 是…答案.
+  // A letter inside a word (维生素B, 维生素D) is left alone.
+  const RE = new RegExp(
+    "(选项\\s*)(" + L + ")"
+    + "|(^|[^A-Za-z0-9])(" + L + ")(?=\\s*(?:项)?\\s*(?:正确|错误|不正确|不对|符合|不符))"
+    + "|(^|[^A-Za-z0-9])(" + L + ")(?=\\s*[对错](?=[，。；：、\\s)）]|$))"
+    + "|(^|[^A-Za-z0-9])(" + L + ")(?=\\s*是\\s*(?:正确|错误|对|错|答案))",
+    "g");
+  return String(text).replace(RE, (m, p1, l1, p2, l2, p3, l3, p4, l4) => {
+    if (p1 != null) return p1 + swap(l1);
+    if (p2 != null) return p2 + swap(l2);
+    if (p3 != null) return p3 + swap(l3);
+    return p4 + swap(l4);
+  });
+}
+
+/* Point the explanation's verdict at the option the shuffled bank says is correct.
+ *
+ * Used only when a remap could not be followed. Undoing the shuffle instead (the old
+ * behaviour) put the generator's original order back, and the generator puts the
+ * correct option first — so a question whose explanation named a letter became a
+ * question answered "A" every time.
+ */
+function forceExplanationAnswer(text, answer, count) {
+  const last = String.fromCharCode(64 + Math.min(count, 26));
+  const L = "[A-" + last + "]";
+  const want = String.fromCharCode(65 + answer);
+  const RE = new RegExp("((?:选项\\s*)?)(" + L + ")(\\s*(?:项)?\\s*(?:是|为)?\\s*(?:正确|对)(?![不]))");
+  return String(text).replace(RE, (m, pre, letter, tail) => pre + want + tail);
 }
 
 /* Which option does the explanation itself call the correct one?
@@ -1557,24 +1574,22 @@ function shuffleQuizOptions(questions) {
       const j = Math.floor(Math.random() * (i + 1));
       [order[i], order[j]] = [order[j], order[i]];
     }
+    const n = q.options.length;
+    let oldAnswer = Number(q.answer);
+    if (!(oldAnswer >= 0 && oldAnswer < n)) oldAnswer = 0;
+    // The explanation is the text the student reads: when it names a different option
+    // as correct, that is the answer. (quizQuestionInvalid already rejects such items
+    // at generation time, so this only bites on banks written by an older prompt.)
+    const saidBefore = explanationAnswerLetter(q.explanation, n);
+    if (saidBefore != null) oldAnswer = saidBefore;
     q.options = order.map((i) => q.options[i]);
-    const oldAnswer = Number(q.answer);
     q.answer = order.indexOf(oldAnswer);
-    // Keep the explanation's "B正确 / A错误" references aligned with the new order.
+    // Keep the explanation's "选项B正确 / 选项A错误" references aligned with the new order.
     if (q.explanation) {
-      q.explanation = remapOptionLetters(q.explanation, order, q.options.length);
-      // Last line of defence: if the explanation says a DIFFERENT option is the
-      // correct one — the AI's own text contradicting its "answer" index, or a
-      // remap that could not be followed — put the options back in the order the
-      // explanation was written against (it is the model's own original order).
-      // The explanation has to be rolled back too: keeping the remapped text while
-      // restoring the options is what left stored banks with letters that no longer
-      // matched their own answer key.
-      const said = explanationAnswerLetter(q.explanation, q.options.length);
+      q.explanation = remapOptionLetters(q.explanation, order, n);
+      const said = explanationAnswerLetter(q.explanation, n);
       if (said != null && said !== q.answer) {
-        q.options = before;
-        q.answer = oldAnswer;
-        q.explanation = beforeExpl;
+        q.explanation = forceExplanationAnswer(q.explanation, q.answer, n);
       }
     }
   });
@@ -5348,15 +5363,25 @@ function collectLessonFigures(lesson, limit = 12) {
   return figs.slice(0, limit);
 }
 
+// The page image of a slide, or — for a deck the PPTX parser handled, where slides
+// carry only their embedded figures and never a "page" image — the slide's first
+// figure. Without this fallback "本题相关 slide" is empty for every PPTX lesson,
+// because that parser does not label images at all.
+function slideVisual(slide) {
+  const imgs = (slide && slide.images) || [];
+  const page = imgs.find((im) => im.kind === "page" && im.dataUrl);
+  if (page) return page;
+  return imgs.find((im) => im.kind !== "logo" && im.dataUrl) || null;
+}
+
 function collectLessonSlides(lesson, limit = 8) {
   const slides = [];
   const seen = new Set();
   (lesson?.slides || []).forEach((s) => {
-    const page = (s.images || []).find((im) => im.kind === "page");
-    if (!page || !page.dataUrl) return;
-    if (seen.has(page.dataUrl)) return;
-    seen.add(page.dataUrl);
-    slides.push({ slide: s.index, im: page, text: s.text || "" });
+    const im = slideVisual(s);
+    if (!im || !im.dataUrl || seen.has(im.dataUrl)) return;
+    seen.add(im.dataUrl);
+    slides.push({ slide: s.index, im, text: s.text || "" });
   });
   return slides.slice(0, limit);
 }
@@ -5368,9 +5393,9 @@ function collectLessonSlidesForSlide(lesson, slideNum, span = 1) {
   const out = [];
   (lesson?.slides || []).forEach((s) => {
     if (!targetSet.has(Number(s.index))) return;
-    const page = (s.images || []).find((im) => im.kind === "page");
-    if (!page || !page.dataUrl) return;
-    out.push({ slide: s.index, im: page, text: s.text || "" });
+    const im = slideVisual(s);
+    if (!im || !im.dataUrl) return;
+    out.push({ slide: s.index, im, text: s.text || "" });
   });
   out.sort((a, b) => a.slide - b.slide);
   return out;

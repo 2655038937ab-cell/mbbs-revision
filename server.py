@@ -974,10 +974,18 @@ def _attach_lesson_images(lesson):
     for i, slide in enumerate(lesson.get("slides") or []):
         saved = saved_slides[i].get("images") if i < len(saved_slides) else None
         for j, im in enumerate(slide.get("images") or []):
-            if isinstance(im, dict) and not im.get("dataUrl") and saved and j < len(saved):
-                src = saved[j].get("dataUrl")
-                if src:
-                    im["dataUrl"] = src
+            if isinstance(im, dict) and saved and j < len(saved):
+                prev = saved[j] if isinstance(saved[j], dict) else {}
+                # kind/name/mime travel with the payload: records saved before a
+                # figure was classified (or by a parser that never labels images,
+                # like the PPTX one) would otherwise come back with dataUrl set but
+                # no kind, and every view that keys on kind ("page" images for the
+                # related-slide strip) silently finds nothing.
+                for field in ("kind", "name", "mime"):
+                    if not im.get(field) and prev.get(field):
+                        im[field] = prev[field]
+                if not im.get("dataUrl") and prev.get("dataUrl"):
+                    im["dataUrl"] = prev["dataUrl"]
     # Manually inserted point figures, matched by their own id.
     figs = img.get("pointFigures") or {}
     if figs:

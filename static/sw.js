@@ -30,7 +30,7 @@
 // background revalidation succeeds — which can leave it on old code for days.
 // Bump SHELL_VERSION whenever a file in SHELL below (or any CSS/JS asset) changes;
 // the worker then installs anew and re-fetches the shell.
-const SHELL_VERSION = "v6";
+const SHELL_VERSION = "v7";
 // The study-content cache has its own version on purpose: bumping it would throw
 // away everything a student has downloaded for offline use, and cached lessons
 // refresh themselves in the background anyway.

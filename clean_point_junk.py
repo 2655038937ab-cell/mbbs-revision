@@ -43,21 +43,24 @@ def text_of(v):
 
 
 def balance_dollars(s):
-    """Escape the one unmatched `$` in a field, if there is one. Returns (new, changed)."""
-    if s.count("$") % 2 == 0:
+    """Escape a `$` that cannot be mathematics. Returns (new, changed).
+
+    Only the unambiguous case is repaired: a field containing exactly ONE `$`. That
+    one is a literal character from the slide — a currency amount ("$772,500",
+    "US$604 billion") or a placeholder in "以 $ 和 & 两种转录本" — and escaping it is
+    always right, because an odd dollar count makes the renderer treat the rest of the
+    paragraph as mathematics. A field with three or more `$` could be a real formula
+    that lost its closer, and escaping the wrong one garbles the mathematics
+    differently instead of fixing it; those are reported and left alone.
+    """
+    if s.count("$") - s.count("\\$") != 1:
         return s, False
-    in_math = False
-    last_open = -1
-    for i, ch in enumerate(s):
-        if ch == "$" and (i == 0 or s[i - 1] != "\\"):
-            if in_math:
-                in_math = False
-            else:
-                in_math = True
-                last_open = i
-    if not in_math or last_open < 0:
+    i = s.find("$")
+    while i > 0 and s[i - 1] == "\\":
+        i = s.find("$", i + 1)
+    if i < 0:
         return s, False
-    return s[:last_open] + "\\$" + s[last_open + 1:], True
+    return s[:i] + "\\$" + s[i + 1:], True
 
 
 def main():
@@ -95,6 +98,7 @@ def main():
                     if did:
                         p[field] = balanced
                         fixed += 1
+                        n_latex += 1
                 for field in ("title",):
                     original = text_of(p.get(field))
                     if original:
@@ -102,7 +106,7 @@ def main():
                         if did:
                             p[field] = balanced
                             fixed += 1
-                n_latex += fixed
+                            n_latex += 1
             keep.append(p)
         if not removed and not fixed:
             continue

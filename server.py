@@ -1037,6 +1037,43 @@ def _lesson_content_loss(prev, incoming):
     return lost
 
 
+# Records deleted a moment ago, so a stale tab cannot bring them back.
+#
+# Regenerating a quiz deletes the superseded bank and writes a fresh one under a new
+# id. A browser that still has the old bank loaded keeps autosaving its answer
+# progress, and that PUT re-CREATED the deleted record: one lesson ended up with two
+# banks, the obsolete 80-question one reappearing a minute after it was deleted (its
+# PUTs are in the server log at 10:54, 10:55 and 10:56). _keep_stored_questions cannot
+# help, because after the delete there is nothing stored to compare against. A deleted
+# id is therefore remembered for a while, and a PUT that tries to recreate it is
+# answered ok (the stale tab has nothing useful to say) but not stored.
+_GHOST_RECORDS = {}
+_GHOST_TTL = 12 * 3600
+
+
+def _note_deleted(store, rid):
+    if not rid:
+        return
+    now = time.time()
+    _GHOST_RECORDS[(store, rid)] = now
+    if len(_GHOST_RECORDS) > 800:
+        for k, t in list(_GHOST_RECORDS.items()):
+            if now - t > _GHOST_TTL:
+                _GHOST_RECORDS.pop(k, None)
+
+
+def _is_ghost(store, rid):
+    if not rid:
+        return False
+    t = _GHOST_RECORDS.get((store, rid))
+    if t is None:
+        return False
+    if time.time() - t > _GHOST_TTL:
+        _GHOST_RECORDS.pop((store, rid), None)
+        return False
+    return True
+
+
 def _keep_stored_questions(existing, incoming):
     """Never let a stale tab replace an existing quiz's questions.
 
@@ -2084,6 +2121,13 @@ class Handler(BaseHTTPRequestHandler):
                 if not body or "id" not in body:
                     self._send_json({"error": "Record must include an id"}, 400)
                     return
+                if _is_ghost(parts[0], body.get("id")):
+                    # A tab that was open before this record was replaced is still
+                    # autosaving it. Answering ok keeps that tab quiet, but the
+                    # record stays deleted.
+                    sys.stderr.write("[dsh] ignored resurrect of %s/%s\n" % (parts[0], body.get("id")))
+                    self._send_json({"ok": True, "ignored": True})
+                    return
                 if parts[0] == "lessons":
                     # Refuse an update that would erase content the server already
                     # holds (see _lesson_content_loss). Three lost fields is the
@@ -2129,6 +2173,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True})
             elif len(parts) == 2:
                 store.delete(parts[0], parts[1])
+                _note_deleted(parts[0], parts[1])
                 _cache_invalidate(parts[0])
                 self._send_json({"ok": True})
             else:

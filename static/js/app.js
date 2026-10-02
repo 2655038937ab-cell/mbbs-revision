@@ -1463,7 +1463,7 @@ ${ptext}`;
 
 const mcqPrompt = (ptext, n, subject, isRetry = false) => `Create EXACTLY ${n} single-best-answer multiple-choice questions (university exam style: a clear stem, one unambiguously best option) from these key points — one question for EACH of the ${n} points, so every point is tested. Do NOT produce fewer than ${n} questions; if a point is hard to make a question from, still make a valid one. Output all ${n}.${isRetry ? `
 
-ONE OR MORE OF THESE WAS REJECTED BY AN AUTOMATIC CHECK, for one of two reasons: (a) its explanation contradicted itself — it named a different option as correct, or called a wrong option "correct"; or (b) the correct option was recognisable by its SHAPE alone — clearly longer or shorter than the others. Rewrite each rejected question so exactly ONE option is true, ALL options are comparable in length and specificity (the correct one must not be the longest or the shortest), and the explanation defends exactly that one.` : ""}
+ONE OR MORE OF THESE WAS REJECTED BY AN AUTOMATIC CHECK, for one of two reasons: (a) its explanation contradicted itself — it named a different option as correct, or called a wrong option "correct"; or (b) the correct option was recognisable by its SHAPE alone — clearly longer or shorter than the others; or (c) it tested attribution instead of the subject (who discovered/proposed something, in which year, who won a prize) or asked what one particular paper or dataset reported. Rewrite each rejected question so exactly ONE option is true, ALL options are comparable in length and specificity (the correct one must not be the longest or the shortest), the question is answerable from the subject itself rather than from a name, a date or a citation, and the explanation defends exactly that one.` : ""}
 
 ${languageReminder()}${subjectQuizRule(subject)}
 
@@ -1670,6 +1670,31 @@ const QUIZ_META = new RegExp(QUIZ_JUNK_STEM.join("|"), "i");
  * bank cleaner reads this same literal and, where the offending option is only a
  * distractor, removes just that option instead of the whole question. */
 const QUIZ_BANNED_OPTION = /all\s+of\s+the\s+above|none\s+of\s+the\s+above|\bboth\s+a\s+and\s+b\b|以上(都|均)对?|以上都不是|a\s*和\s*b\s*都/i;
+/* Attribution questions. "Who discovered X / in which year / which scientist won the
+ * Nobel" test recall of names and dates, not medicine: the prompt forbids them and the
+ * model still wrote them. Anchoring "who" to the START of the stem is what keeps this
+ * safe — a clinical vignette ("A patient who received a transfusion 3 days ago…")
+ * mentions "who" too, and an earlier unanchored version rejected 8 such items.
+ * Measured against the live banks: 0 of 1167 PKU questions and 8 of 20184 MBBS ones. */
+const QUIZ_TRIVIA = new RegExp([
+  "^\\s*(?:who|which\\s+(?:scientist|researcher|investigator|physician|author))\\b",
+  "\\b(?:was|were)\\s+(?:first\\s+)?(?:discovered|proposed|described|named|invented|introduced|developed)\\s+by\\b",
+  "\\bNobel\\b|诺贝尔",
+  "\\b(?:in|during)\\s+which\\s+year\\b|\\bwhat\\s+year\\b",
+  "(?:谁|哪位|由谁)[^。？]{0,20}(?:发现|提出|创立|命名|发明|首次|证明|报道|描述|获得|获奖)",
+  "(?:发现|提出|命名|发明|创立|首创)者",
+  "(?:是|由)\\s*谁\\s*(?:发现|提出|发明|创立)?",
+].join("|"), "i");
+
+/* Citation questions: "In the validation study by Siu WK, Mak M Chloe, et al. (Hong
+ * Kong Journal of Nephrology 2011)…, how many patients…". Answering means remembering
+ * a paper's numbers, which no student can use. 20 of 20184 MBBS questions, 0 PKU. */
+const QUIZ_CITATION = new RegExp([
+  "\\bet\\s+al\\b",
+  "\\b(?:Journal|Lancet|NEJM|BMJ|Cochrane)\\b[^.]{0,50}?\\b(?:19|20)\\d\\d\\b",
+  "\\b(?:Globocan|GLOBOCAN)\\b",
+  "\\b(?:19|20)\\d\\d\\s*;\\s*\\d+\\s*[:(]",
+].join("|"), "i");
 function quizQuestionInvalid(q, lenient = false) {
   if (!q || !Array.isArray(q.options) || q.options.length < 2) return true;
   const n = q.options.length;
@@ -1689,6 +1714,13 @@ function quizQuestionInvalid(q, lenient = false) {
     const uniqueMax = mine === max && lens.filter((x) => x === max).length === 1;
     const uniqueMin = mine === min && lens.filter((x) => x === min).length === 1;
     if (mid >= 8 && ((uniqueMax && mine > mid * 1.3) || (uniqueMin && mine < mid * 0.55))) return true;
+  }
+  // Names, dates and citations. Skipped on the final attempt for the same reason as the
+  // length rule: after three tries a question that merely mentions a year is worth more
+  // than leaving the knowledge point unquizzed.
+  if (!lenient) {
+    const stem = String(q.question || "");
+    if (QUIZ_TRIVIA.test(stem) || QUIZ_CITATION.test(stem)) return true;
   }
   // A question about the lecture's own objectives/textbook cannot be answered from
   // the subject itself, so it is dropped and regenerated like any other broken item.
@@ -1906,6 +1938,42 @@ async function applyFigureCrop(imgEl, pageDataUrl, bbox) {
 }
 
 const ocrPrompt = `Transcribe all the readable text on this page image, preserving headings and reading order. Return JSON: {"text":"..."}`;
+
+/* Per-page image transcription is charged per call (~400-2000 tokens, decided by the
+ * pixel size), so it is only spent where the text layer cannot carry the page.
+ *
+ * A page qualifies in three cases. No text at all (a scanned handout or a picture
+ * slide) was the original condition. Two more pay for themselves:
+ *   - "short": under ~40 characters. These are picture slides whose text layer holds
+ *     only the heading ("Proteinuria", "Microalbuminuria"), so everything that makes
+ *     the page worth studying is inside the image.
+ *   - "broken": the text layer is unreadable. A PDF with a damaged font encoding
+ *     extracts as punctuation soup (" /  /  !"#$"%&""), and that garbage used to flow
+ *     into the key points, the cards and the quiz — worse than having no text, because
+ *     it looks like content. Measured on the libraries, broken pages score under 0.25
+ *     readable characters while every legitimate page (data tables such as
+ *     "All comparisons, P < 0.001", axis labels such as "0 mV / -90 mV") stays above
+ *     0.45, so the threshold has a wide margin.
+ *
+ * Deliberately NOT a reason: symbol-font leakage. A Wingdings bullet extracts as
+ * U+F0A2 and similar private-use characters, which flagged 40 PKU / 580 MBBS pages in
+ * an earlier version of this rule — but the text itself is perfectly readable there,
+ * so paying for vision would buy nothing.
+ *
+ * This also saves vision calls further down: the figure-caption step sends every image
+ * of a page whose text is under 20 characters to the vision model (up to four calls
+ * per page). Filling the text here moves those pages onto the cheap batched text path. */
+const OCR_MIN_TEXT = 40;
+const OCR_MIN_READABLE = 0.25;
+
+function slideTextProblem(s) {
+  const t = (s && s.text ? String(s.text) : "").trim();
+  if (!t) return "empty";
+  if (t.length < OCR_MIN_TEXT) return "short";
+  const wordish = (t.match(/[A-Za-z0-9\u4e00-\u9fff]/g) || []).length;
+  if (wordish / t.length < OCR_MIN_READABLE) return "broken";
+  return null;
+}
 
 const figureCaptionPrompt = (slideText, n) => `This lecture slide contains ${n} figure(s) (diagrams/images). The slide text is:
 
@@ -6360,11 +6428,13 @@ async function generateStudySet(lessonId, regenerate = false) {
   // and the caption step then had to GUESS what each figure showed (it invented a
   // whole different topic, which then poisoned the points, cards and quiz).
   const scanned = (lesson.slides || []).filter(
-    (s) => !s.text && (s.images || []).some((im) => im.dataUrl && im.kind !== "logo")
+    (s) => (s.images || []).some((im) => im.dataUrl && im.kind !== "logo") && slideTextProblem(s)
   );
   if (scanned.length) {
     if (hasVision) {
-      pm.addStep(`OCR ${scanned.length} image-only page${scanned.length > 1 ? "s" : ""} (vision)`);
+      const why = scanned.reduce((acc, s) => { const w = slideTextProblem(s) || "empty"; acc[w] = (acc[w] || 0) + 1; return acc; }, {});
+      pm.addStep(`OCR ${scanned.length} page${scanned.length > 1 ? "s" : ""} without usable text (vision)`
+        + [why.empty ? ` · ${why.empty} no text` : "", why.short ? ` · ${why.short} heading-only` : "", why.broken ? ` · ${why.broken} broken text layer` : ""].join(""));
       pm.setStep(step, "running");
       let ocrDone = 0;
       await parallelMap(scanned, 8, async (s) => {
@@ -6376,14 +6446,27 @@ async function generateStudySet(lessonId, regenerate = false) {
                .sort((a, b) => (b.dataUrl || "").length - (a.dataUrl || "").length)[0];
         const r = await api.vision(img.dataUrl, ocrPrompt);
       if (r && r.usage) pm.addTokens(r.usage.total_tokens);
-        if (!r.error) { const p = parseJSON(r.content); if (p?.text) s.text = (s.text ? s.text + "\n" : "") + p.text; }
+        if (!r.error) {
+          const p = parseJSON(r.content);
+          const read = p && p.text ? String(p.text).trim() : "";
+          if (read) {
+            // A page that merely had little text keeps it and gains whatever the
+            // picture says. A page whose text layer is BROKEN must not keep the
+            // garbage, so the reading replaces it — unless the reading came back much
+            // shorter, in which case the old text is appended instead of thrown away.
+            const problem = slideTextProblem(s);
+            const old = String(s.text || "");
+            if (problem === "broken" && read.length >= Math.max(20, old.length * 0.4)) s.text = read;
+            else s.text = old ? old + "\n" + read : read;
+          }
+        }
         ocrDone++;
         pm.msg(`Reading pages ${ocrDone}/${scanned.length}…`);
         pm.setProgress((ocrDone / scanned.length) * 0.15);
       });
       pm.setStep(step, "done");
     } else {
-      pm.addStep(`${scanned.length} image-only page(s) — skipped (no vision key)`);
+      pm.addStep(`${scanned.length} page(s) without usable text — skipped (no vision key)`);
       pm.setStep(step, "done");
     }
     step++;
@@ -6699,11 +6782,13 @@ async function generatePointsOnly(lessonId) {
 
   // OCR (optional)
   const scanned = (lesson.slides || []).filter(
-    (s) => !s.text && (s.images || []).some((im) => im.dataUrl && im.kind !== "logo")
+    (s) => (s.images || []).some((im) => im.dataUrl && im.kind !== "logo") && slideTextProblem(s)
   );
   if (scanned.length) {
     if (cfg.has_vision_key) {
-      pm.addStep(`OCR ${scanned.length} image-only page${scanned.length > 1 ? "s" : ""} (vision)`);
+      const why = scanned.reduce((acc, s) => { const w = slideTextProblem(s) || "empty"; acc[w] = (acc[w] || 0) + 1; return acc; }, {});
+      pm.addStep(`OCR ${scanned.length} page${scanned.length > 1 ? "s" : ""} without usable text (vision)`
+        + [why.empty ? ` · ${why.empty} no text` : "", why.short ? ` · ${why.short} heading-only` : "", why.broken ? ` · ${why.broken} broken text layer` : ""].join(""));
       pm.setStep(step, "running");
       let ocrDone = 0;
       await parallelMap(scanned, 8, async (s) => {
@@ -6715,14 +6800,27 @@ async function generatePointsOnly(lessonId) {
                .sort((a, b) => (b.dataUrl || "").length - (a.dataUrl || "").length)[0];
         const r = await api.vision(img.dataUrl, ocrPrompt);
       if (r && r.usage) pm.addTokens(r.usage.total_tokens);
-        if (!r.error) { const p = parseJSON(r.content); if (p?.text) s.text = (s.text ? s.text + "\n" : "") + p.text; }
+        if (!r.error) {
+          const p = parseJSON(r.content);
+          const read = p && p.text ? String(p.text).trim() : "";
+          if (read) {
+            // A page that merely had little text keeps it and gains whatever the
+            // picture says. A page whose text layer is BROKEN must not keep the
+            // garbage, so the reading replaces it — unless the reading came back much
+            // shorter, in which case the old text is appended instead of thrown away.
+            const problem = slideTextProblem(s);
+            const old = String(s.text || "");
+            if (problem === "broken" && read.length >= Math.max(20, old.length * 0.4)) s.text = read;
+            else s.text = old ? old + "\n" + read : read;
+          }
+        }
         ocrDone++;
         pm.msg(`Reading pages ${ocrDone}/${scanned.length}…`);
         pm.setProgress((ocrDone / scanned.length) * 0.15);
       });
       pm.setStep(step, "done");
     } else {
-      pm.addStep(`${scanned.length} image-only page(s) — skipped (no vision key)`);
+      pm.addStep(`${scanned.length} page(s) without usable text — skipped (no vision key)`);
       pm.setStep(step, "done");
     }
     step++;

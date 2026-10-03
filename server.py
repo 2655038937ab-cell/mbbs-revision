@@ -1089,6 +1089,38 @@ def _is_ghost(store, rid):
     return True
 
 
+def _paper_content_loss(prev, incoming):
+    """True when a save would undo a paper analysis.
+
+    Regrouping a paper replaces its knowledge points wholesale (one point per concept,
+    each tied to the question detail that forces it), so the loss guard that compares
+    point TEXT cannot see the damage: the new points are absent from the older copy
+    rather than rewritten. What it can see is the shape of the record — fewer analysed
+    questions, fewer knowledge points, or fewer per-question links than are already
+    stored. Such a save is only legitimate from a client that knows about the newer
+    sheet, which is what updatedAt records.
+    """
+    if not isinstance(prev, dict) or not isinstance(incoming, dict):
+        return False
+    prev_paper = prev.get("paperQuestions") or []
+    if not prev.get("paper") and not prev_paper:
+        return False
+    try:
+        prev_at = float(prev.get("updatedAt") or 0)
+        new_at = float(incoming.get("updatedAt") or 0)
+    except (TypeError, ValueError):
+        prev_at = new_at = 0.0
+    if new_at > prev_at:
+        return False                      # a fresh analysis, not a stale copy
+
+    def counts(rec):
+        qs = rec.get("paperQuestions") or []
+        per = sum(len(q.get("points") or []) for q in qs if isinstance(q, dict))
+        return (len(qs), len(rec.get("points") or []), per)
+
+    return counts(incoming) < counts(prev)
+
+
 def _keep_stored_questions(existing, incoming):
     """Never let a stale tab replace an existing quiz's questions.
 
@@ -2153,7 +2185,14 @@ class Handler(BaseHTTPRequestHandler):
                     # holds (see _lesson_content_loss). Three lost fields is the
                     # threshold: clearing one by hand stays possible, losing a
                     # lesson's worth of text does not silently happen.
-                    loss = _lesson_content_loss(get_store().get("lessons", body.get("id")), body)
+                    prev = get_store().get("lessons", body.get("id"))
+                    if _paper_content_loss(prev, body):
+                        self._send_json({
+                            "error": ("This save would replace the analysed paper with an older "
+                                      "copy of the lesson (fewer questions or knowledge points). "
+                                      "Reload the page first.")}, 409)
+                        return
+                    loss = _lesson_content_loss(prev, body)
                     if len(loss) >= 3:
                         self._send_json({
                             "error": ("This save would erase knowledge-point text the server already "

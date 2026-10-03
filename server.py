@@ -28,6 +28,7 @@ from urllib.parse import urlparse, parse_qs, unquote
 
 import exporters
 import pdf_parser
+import docx_parser
 import ppt_parser
 from store import Store
 
@@ -633,6 +634,9 @@ def slim_lesson(rec, lite=False):
         return rec
     out = dict(rec)
     out.pop("outline", None)
+    # A paper's questions and their worked solutions are read only by the paper tab
+    # (which fetches the single lesson), and they are large: never in a list payload.
+    out.pop("paperQuestions", None)
     slides = []
     for s in rec.get("slides") or []:
         if not isinstance(s, dict):
@@ -812,6 +816,17 @@ def _is_top_right(im):
     cx = im["x"] + im["w"] / 2.0
     cy = im["y"] + im["h"] / 2.0
     return cx >= 0.62 and cy <= 0.32 and im["w"] <= 0.30 and im["h"] <= 0.30
+
+
+def _zip_has(raw, member):
+    """True when a ZIP upload contains `member` — this is what tells a .docx from a .pptx."""
+    import io as _io
+    import zipfile as _zipfile
+    try:
+        with _zipfile.ZipFile(_io.BytesIO(raw)) as z:
+            return member in z.namelist()
+    except Exception:
+        return False
 
 
 def _mark_logos(parsed):
@@ -1896,10 +1911,15 @@ class Handler(BaseHTTPRequestHandler):
                     result = pdf_parser.parse_pdf(raw, **pdf_opts)
                     kind = "pdf"
                 elif raw[:4] == b"PK\x03\x04":
-                    result = ppt_parser.parse_pptx(raw)
-                    kind = "pptx"
+                    # .docx and .pptx are both ZIPs, so the archive decides.
+                    if _zip_has(raw, "word/document.xml"):
+                        result = docx_parser.parse_docx(raw)
+                        kind = "docx"
+                    else:
+                        result = ppt_parser.parse_pptx(raw)
+                        kind = "pptx"
                 else:
-                    self._send_json({"error": "Unsupported file. Please upload a .pptx or .pdf (if it's an old .ppt, save it as .pptx first)."}, 400)
+                    self._send_json({"error": "Unsupported file. Please upload a .pptx, .pdf or .docx — or images of the pages (.png/.jpg), which are imported one page per image. An old .ppt should be saved as .pptx first. 上传试卷也可以直接把每页拍照/截图后上传（每张图一页）。"}, 400)
                     return
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, 400)

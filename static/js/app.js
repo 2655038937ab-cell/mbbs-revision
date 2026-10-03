@@ -1975,6 +1975,66 @@ function slideTextProblem(s) {
   return null;
 }
 
+/* ---------------- Exam papers and problem sets ----------------
+ * A paper is not a lesson. The questions already exist and must survive verbatim, and
+ * what a student needs first is the material each question turns on. The two prompts
+ * are split by job — extract the paper exactly, then teach and solve — because one
+ * prompt doing both quietly rewrites the questions while summarising them, and a
+ * rewritten question is worthless for revision. */
+const paperExtractPrompt = (pages, isRetry = false) => `Below are the pages of an exam paper or problem set. Extract EVERY question, exactly as printed.${isRetry ? `
+
+A FIRST PASS RETURNED TOO LITTLE. Re-read the pages and return every question again, complete and verbatim.` : ""}
+
+${languageReminder()}
+Rules:
+- Copy the stem VERBATIM, in its original language and wording. Never rewrite, simplify, translate, merge, reorder or improve a question.
+- Keep the printed numbering ("1.", "2(a)", "三、", "Question 4"). If a question has no number, number it in reading order.
+- Multiple choice: keep every option verbatim and in order, each starting with its printed letter ("A. ...", "B) ...").
+- Keep marks inside the stem ("(5 分)", "(2 marks)") and write any table or formula as text.
+- If the paper prints an ANSWER KEY or worked solutions, copy that entry into "givenAnswer" / "givenSolution". It is the strongest evidence of the intended answer, so never skip it.
+- Ignore page headers and footers, page numbers, logos, instructions ("Answer ALL questions", "Time allowed: 3 hours"), candidate numbers and blank space.
+- Do NOT invent, complete or split questions. A question cut across a page break is ONE question.
+- If a page holds no questions, contribute nothing for it.
+
+Return JSON: {"questions":[{"n":"1","stem":"...","options":["A. ...","B. ..."],"givenAnswer":"","givenSolution":"","page":N}]}
+
+Pages:
+${pages}`;
+
+const paperPointsPrompt = (questions) => `These questions could not be turned into usable study material, so return ONLY the knowledge points each one tests — the part a student studies BEFORE attempting it.
+
+${languageReminder()}
+For every question return "points": 2 to 6 knowledge points, no padding. Each is {"title": ..., "explanation": ...}: the title names the concept specifically in the course's own language, and the explanation TEACHES it in 2-5 sentences — what it is, how it works, and the part this question turns on. Never mention the answer and never write "本题".
+
+Return JSON: {"items":[{"n":"copy the identifier in brackets EXACTLY","points":[{"title":"...","explanation":"..."}]}]}
+
+Questions:
+${questions}`;
+
+const paperStudyPrompt = (questions, isRetry = false) => `For each question of this exam paper, produce the study material a student needs BEFORE attempting it, then the answer and a complete worked solution.${isRetry ? `
+
+SOME ITEMS WERE REJECTED BY AN AUTOMATIC CHECK, usually because an explanation referred to the answer instead of teaching the concept, or because a solution jumped straight to the result without the reasoning. Rewrite those properly.` : ""}
+
+${languageReminder()}
+For EVERY question return:
+- "points": the knowledge points this question tests, 2 to 6 of them, no padding and no filler. Each is {"title": ..., "explanation": ...}:
+  - "title": the concept named specifically, in the course's own language ("钠钾泵的化学计量", not "细胞膜"; "希尔方程的协同系数", not "蛋白质结合").
+  - "explanation": 2-5 sentences that TEACH the concept — what it is, how it works, and the part this question turns on. Write it for someone who has not attempted the question yet: explain the concept itself. Never mention the answer, never write "本题" or "这道题".
+  - The same concept must not appear twice across the paper under different wording.
+- "answer": for multiple choice, the correct option letter ("B"); otherwise the complete model answer, with the final value and its units when the question is numerical.
+- "solution": the full solution in the order a student should think, 3-8 steps: what is given and what is asked; which principle, definition or relation applies and WHY; each algebraic or logical step; the final result with units. For multiple choice also say why each other option is wrong, referring to them as 选项A / 选项B (never a bare letter). Never just restate the answer.
+- "keyTerms": 2-6 terms the student's own explanation should contain (they become a self-check list).
+- "answerFromPaper": true if the paper printed its own answer and this agrees; false if it disagrees — then say in "solution" which is correct and why, because a printed key can be wrong.
+Anchor everything in the subject matter itself. Never cite who discovered something, in which year, or which textbook or paper it came from, and never ask the student to recall such attribution.
+
+"n" is the identifier given for that question in square brackets below — copy it EXACTLY as written (it may be "第1题", "3(a)" or "Q4"), because it is how each item is matched back to its question.
+
+Return JSON: {"items":[{"n":"1","points":[{"title":"...","explanation":"..."}],"answer":"...","solution":"...","keyTerms":["..."],"answerFromPaper":true}]}
+
+Questions:
+${questions}`;
+
+
 const figureCaptionPrompt = (slideText, n) => `This lecture slide contains ${n} figure(s) (diagrams/images). The slide text is:
 
 """
@@ -3463,6 +3523,7 @@ async function renderLessonDetailBody() {
   const nextId = idx >= 0 && idx < lessonOrder.length - 1 ? lessonOrder[idx + 1] : null;
 
   const tabs = [
+    ...(lesson.paper ? [["paper", "📝 试卷"]] : []),
     ["points", "✨ 知识点"], ["cards", "🃏 闪卡"], ["quiz", "📝 题目"], ["mindmap", "🗺 思维导图"], ["figures", "🖼 配图"], ["slides", "📄 原课件"],
   ];
   const isImmersive = immersiveOn && currentTab === "points";
@@ -3513,6 +3574,7 @@ async function renderLessonDetailBody() {
         <button class="btn btn-sm btn-ghost" id="btn-gen-points" title="只重新提炼知识点">📌 知识点</button>
         <button class="btn btn-sm btn-ghost" id="btn-gen-cards" title="只重新生成闪卡">🃏 闪卡</button>
         <button class="btn btn-sm btn-ghost" id="btn-gen-quiz" title="只重新生成题目">📝 题目</button>
+        <button class="btn btn-sm btn-ghost" id="btn-gen-paper" title="把这个文件当作试卷/练习解析：逐字提取原题，列出每题的考点并讲解，再写答案和解题思路">🧪 试卷解析</button>
         <button class="btn btn-sm btn-ghost" id="btn-gen-figs" title="只重新配图">🖼 配图</button>
         <button class="btn btn-sm btn-ghost" id="btn-reclassify" title="用新的分类规则重新整理这门课的知识点层级（不重新生成内容，成本极低）">🏷 重排分类</button>
         <button class="btn btn-sm btn-ghost" id="btn-export" title="下载 PDF">📄 PDF</button>
@@ -3553,6 +3615,7 @@ async function renderLessonDetailBody() {
   $("#btn-gen-points").addEventListener("click", () => confirmGenerate("将<b>重新提炼知识点</b>并替换现有知识点（闪卡、题目不受影响）。确定继续？", () => generatePointsOnly(currentLessonId)));
   $("#btn-gen-cards").addEventListener("click", () => confirmGenerate("将<b>重新生成闪卡</b>并替换现有闪卡。确定继续？", () => generateCardsOnly(currentLessonId)));
   $("#btn-gen-quiz").addEventListener("click", () => confirmGenerate("将<b>重新生成题目</b>并替换现有题目。确定继续？", () => regenerateQuiz(currentLessonId)));
+  $("#btn-gen-paper").addEventListener("click", () => confirmGenerate("把这个文件当作<b>试卷/练习</b>解析？<br>AI 会逐字提取原题、列出每道题考的考点并讲解，然后写出答案与解题思路。<br><span class='sub'>这不会改动原文件，解析结果存在这门课里。</span>", () => generatePaper(currentLessonId)));
   $("#btn-gen-figs").addEventListener("click", () => confirmGenerate("将<b>重新配图</b>并更新图注。确定继续？", () => generateFiguresOnly(currentLessonId)));
   $("#btn-reclassify").addEventListener("click", () => confirmGenerate("将用新的分类规则<b>重新整理这门课的知识点层级</b>（不重新生成内容，仅重排分类）。确定继续？", () => reclassifyCurrentLesson(currentLessonId)));
   $("#btn-export").addEventListener("click", () => exportPdfOnly(currentLessonId));
@@ -3838,7 +3901,8 @@ async function renderTabBody(lesson, cards, quiz) {
     document.removeEventListener("keydown", quizReviewKeydown);
   }
   const body = $("#tab-body");
-  if (currentTab === "points") renderPointsTab(body, lesson);
+  if (currentTab === "paper") renderPaperTab(body, lesson);
+  else if (currentTab === "points") renderPointsTab(body, lesson);
   else if (currentTab === "cards") renderCardsTab(body, lesson, cards);
   else if (currentTab === "quiz") renderQuizTab(body, lesson, quiz);
   else if (currentTab === "mindmap") renderMindmapTab(body, lesson);
@@ -3923,6 +3987,174 @@ function pointMatchesQuery(p, q) {
   const hay = [p.title, expl, (p.keyTerms || []).join(" "), (p.tags || []).join(" ")]
     .filter(Boolean).join(" ").toLowerCase();
   return String(q || "").toLowerCase().split(/\s+/).filter(Boolean).every((tok) => queryTokenHit(hay, tok));
+}
+
+/* Apply one reply item to its question. A retry that comes back empty must never wipe
+ * material the question already has, so every field is written only when it carries
+ * something. Returns true when the item was useful at all. */
+function applyPaperItem(q, it) {
+  if (!it || !q) return false;
+  const answer = String(it.answer || "").trim();
+  const solution = String(it.solution || "").trim();
+  const pts = it.points || it.knowledgePoints || it.knowledge_points;
+  const points = (Array.isArray(pts) ? pts : [])
+    .filter((p) => p && String(p.title || "").trim())
+    .map((p) => ({ title: String(p.title).trim(), explanation: String(p.explanation || p.detail || "").trim() }));
+  if (answer) q.answer = answer;
+  if (solution) q.solution = solution;
+  if (points.length) q.points = points;
+  const terms = Array.isArray(it.keyTerms) ? it.keyTerms.map((k) => String(k)).filter(Boolean).slice(0, 8) : [];
+  if (terms.length) q.keyTerms = terms;
+  if (it.answerFromPaper != null) q.answerFromPaper = it.answerFromPaper;
+  return !!(solution || points.length);
+}
+
+/* Ask again for the questions that came back without knowledge points.
+ *
+ * Run one at a time: the failures were transient (the same question answered fine when
+ * asked alone), and three parallel retries compete for the same rate limit. The last
+ * attempt drops the answer/solution and asks only for the points, which is the half that
+ * matters most — a student can attempt a question without its model answer, but there is
+ * nothing to study without the points. */
+async function repairQuestions(list, attempts, pm) {
+  const pts = [];
+  for (const q of list) {
+    if (pm && pm.isCancelled()) break;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const pointsOnly = attempt === attempts - 1;
+      const prompt = pointsOnly
+        ? paperPointsPrompt(`[${q.n}] ${q.stem}` + ((q.options || []).length ? "\nOptions: " + q.options.join(" | ") : ""))
+        : paperStudyPrompt(`[${q.n}] ${q.stem}` + ((q.options || []).length ? "\nOptions: " + q.options.join(" | ") : ""));
+      const r = await api.llm([{ role: "system", content: SYS }, { role: "user", content: prompt }], { json_mode: true, max_tokens: 12000 });
+      if (r && r.usage && pm) pm.addTokens(r.usage.total_tokens);
+      if (r && r.error) { if (pm) pm.msg(`${paperLabel(q.n)} 第 ${attempt + 1} 次调用失败（${r.error}）`); await new Promise((res) => setTimeout(res, 900)); continue; }
+      const parsed = parseJSON((r && r.content) || "");
+      const items = parsed && Array.isArray(parsed.items) ? parsed.items : [];
+      const it = items.find((x) => normStem(x.n) === normStem(q.n) || String(x.n || "").replace(/[^0-9]/g, "") === String(q.n).replace(/[^0-9]/g, "")) || items[0] || null;
+      const got = it ? ((it.points || it.knowledgePoints || []).length) : 0;
+      if (pm) pm.msg(`${paperLabel(q.n)} 第 ${attempt + 1} 次：返回 ${items.length} 条，其中 ${got} 个考点`);
+      if (it && applyPaperItem(q, it) && (q.points || []).length) { pts.push(q); break; }
+      await new Promise((res) => setTimeout(res, 500));
+    }
+  }
+  return pts;
+}
+
+/* A paper's own numbering is kept verbatim for display ("第1题", "3(a)", "Q4"), so the
+ * template must not wrap it in another "第 … 题". */
+function paperLabel(n) {
+  const t = String(n == null ? "" : n).trim();
+  if (!t) return "这一题";
+  return /^(第|Q|q|Question|question|Part|part|三|四|五|六|七|八|九|十|[一二三四五六七八九十]+[、.．])/.test(t) ? t : `第 ${t} 题`;
+}
+
+/* The paper sheet. Order is the whole point: every question's knowledge points with
+ * explanations first, then the questions, then the answers and the worked solutions —
+ * so the student can study the material before attempting anything, and check their
+ * working afterwards instead of only seeing whether they were right. */
+function renderPaperTab(body, lesson) {
+  const qs = lesson.paperQuestions || [];
+  const points = lesson.points || [];
+  if (!qs.length) {
+    body.innerHTML = `<div class="card"><div class="sub">这份文件还没有解析成试卷。点课程工具条里的「🧪 试卷解析」——AI 会把原题逐字提取出来，列出每道题考的考点并讲解，再写出答案和完整解题思路。</div></div>`;
+    return;
+  }
+  const byQ = new Map();
+  points.forEach((p) => (p.qrefs || []).forEach((n) => {
+    const k = String(n);
+    if (!byQ.has(k)) byQ.set(k, []);
+    byQ.get(k).push(p);
+  }));
+  const answerOf = (q) => String(q.answer || "").trim();
+  const letterOf = (s) => (String(s || "").trim().match(/^[A-Fa-f]/) || [""])[0].toUpperCase();
+
+  const sec1 = qs.map((q) => {
+    const list = byQ.get(String(q.n)) || [];
+    return `<details class="paper-block" open>
+      <summary>${escapeHtml(paperLabel(q.n))} <span class="sub">· 考 ${list.length} 个考点</span></summary>
+      ${list.length ? list.map((p) => `<div class="paper-point">
+          <div style="font-weight:700">${escapeHtml(p.title)}</div>
+          <div class="paper-body">${md(explanationText(p.explanation))}</div>
+          ${(p.keyTerms || []).length ? `<div class="sub" style="margin-top:6px;font-size:12.5px">关键词：${p.keyTerms.map((k) => escapeHtml(String(k))).join(" · ")}</div>` : ""}
+        </div>`).join("") : `<div class="sub">（这一题没有单独的知识点）</div>`}
+    </details>`;
+  }).join("");
+
+  const sec2 = qs.map((q) => {
+    const opts = q.options || [];
+    return `<div class="card paper-question" data-q="${escapeHtml(String(q.n))}" style="margin-bottom:14px">
+      <div style="font-weight:700;margin-bottom:8px">${escapeHtml(paperLabel(q.n))}</div>
+      <div class="paper-body">${md(q.stem)}</div>
+      ${opts.length ? `<div class="paper-options" style="margin-top:10px">
+        ${opts.map((o, i) => `<button class="chip paper-opt" data-q="${escapeHtml(String(q.n))}" data-letter="${escapeHtml(letterOf(o) || String.fromCharCode(65 + i))}" style="display:block;width:100%;text-align:left;margin:6px 0">${escapeHtml(o)}</button>`).join("")}
+      </div>` : `<div class="sub" style="margin-top:8px">（非选择题：自己写答案，写完再对照下面的解题思路）</div>`}
+      <div class="paper-verdict sub" style="margin-top:8px"></div>
+    </div>`;
+  }).join("");
+
+  const sec3 = qs.map((q) => {
+    const correct = answerOf(q);
+    return `<details class="paper-block">
+      <summary>${escapeHtml(paperLabel(q.n))} <span class="sub">答案与解题思路</span></summary>
+      <div class="paper-answer">
+        <div><b>答案：</b>${correct ? escapeHtml(correct) : "<span class=\"sub\">（未生成）</span>"}</div>
+        ${q.solution ? `<div style="margin-top:8px"><b>解题思路：</b><div class="paper-body">${md(q.solution)}</div></div>` : `<div class="sub" style="margin-top:8px">这道题还没有解题思路，点工具条里的「🧪 试卷解析」可以重新生成。</div>`}
+        ${q.givenAnswer ? `<div class="sub" style="margin-top:8px">试卷原文给出的答案：${escapeHtml(q.givenAnswer)}</div>` : ""}
+      </div>
+    </details>`;
+  }).join("");
+
+  body.innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div style="font-weight:700;font-size:16px">📝 ${escapeHtml(lesson.title || "试卷")}</div>
+      <div class="sub" style="margin-top:6px">${qs.length} 道题 · ${points.length} 个考点 · 建议顺序：<b>先看考点</b> → <b>再做题目</b> → <b>最后对答案</b></div>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-accent btn-sm" id="paper-go">开始做题 ↓</button>
+        <button class="btn btn-sm" id="paper-show-all">展开全部答案</button>
+      </div>
+    </div>
+    <h3 style="margin:18px 0 8px">一、考点（每道题考什么）</h3>
+    ${sec1}
+    <h3 style="margin:22px 0 8px">二、题目（复习完再做）</h3>
+    ${sec2}
+    <h3 style="margin:22px 0 8px">三、答案与解题思路</h3>
+    ${sec3}`;
+
+  const go = body.querySelector("#paper-go");
+  if (go) go.addEventListener("click", () => {
+    const first = body.querySelector(".paper-question");
+    if (first) first.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+  const all = body.querySelector("#paper-show-all");
+  if (all) all.addEventListener("click", () => {
+    const blocks = Array.from(body.querySelectorAll("h3 ~ details")).slice(-qs.length);
+    const anyClosed = blocks.some((d) => !d.open);
+    blocks.forEach((d) => { d.open = anyClosed; });
+    all.textContent = anyClosed ? "收起全部答案" : "展开全部答案";
+  });
+  // Answering a multiple-choice item marks it and says whether it was right — the point
+  // of the sheet is checking your own working, not scoring it.
+  body.querySelectorAll(".paper-opt").forEach((btn) => btn.addEventListener("click", () => {
+    const n = btn.dataset.q, picked = btn.dataset.letter;
+    const q = qs.find((x) => String(x.n) === String(n));
+    if (!q) return;
+    const right = letterOf(q.answer);
+    const wrap = btn.closest(".paper-question");
+    if (wrap) wrap.querySelectorAll(".paper-opt").forEach((b) => {
+      b.classList.remove("active", "paper-opt-right", "paper-opt-wrong");
+      if (right && b.dataset.letter === right) b.classList.add("paper-opt-right");
+    });
+    btn.classList.add("active");
+    if (right && picked !== right) btn.classList.add("paper-opt-wrong");
+    const verdict = wrap && wrap.querySelector(".paper-verdict");
+    if (verdict) verdict.innerHTML = !right
+      ? "（这道题没有选项答案，去看下面的解题思路 ✓）"
+      : (picked === right ? "✓ 选对了 —— 下面的解题思路可以再核对一遍依据" : `✗ 选错了，正确答案是 ${escapeHtml(right)} —— 先别急着看解析，想想是哪一步的理解出了偏差`);
+    const blocks = Array.from(body.querySelectorAll("h3 ~ details")).slice(-qs.length);
+    const label = paperLabel(n);
+    const block = blocks.find((d) => ((d.querySelector("summary") || {}).textContent || "").includes(label));
+    if (block) block.open = true;
+  }));
 }
 
 function renderPointsTab(body, lesson) {
@@ -5826,13 +6058,13 @@ async function openUpload() {
   const picked = []; // File[]
   openModal(`
     <h2>📥 上传课程</h2>
-    <p class="sub" style="margin-bottom:14px">支持 <b>.pptx</b> / <b>.pdf</b>，可一次选多个文件。同一节课的多个文件可以<b>合并成一门课</b>。</p>
+    <p class="sub" style="margin-bottom:14px">支持 <b>.pptx</b> / <b>.pdf</b> / <b>.docx</b>，也可以直接传<b>图片</b>（拍照或截图，每张图一页）。可一次选多个文件；同一节课的多个文件可以<b>合并成一门课</b>。<br><span style="opacity:.8">试卷/练习：上传后点课程里的「🧪 试卷解析」，会先列出每道题考的考点并讲解，最后给出答案与解题思路。Word 里的图片不会导入，图文并茂的试卷建议先导出成 PDF。</span></p>
     <div class="dropzone" id="dz">
       <div class="dz-ico">📥</div>
       <div style="font-weight:600;margin-top:6px">拖拽文件到这里，或点击选择，也可以直接粘贴（⌘V）</div>
       <div class="sub">可多选 · PowerPoint (.pptx) 或 PDF (.pdf) · 也支持粘贴截图 / 文字</div>
       <div class="sub" style="margin-top:4px;font-size:11.5px;opacity:.75">单个文件上限 ${_maxUploadMb} MB · 更大的教科书请先用 <code>split_pdf.py</code> 拆分</div>
-      <input type="file" id="dz-input" multiple accept=".pptx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation">
+      <input type="file" id="dz-input" multiple accept=".pptx,.pdf,.docx,application/pdf,image/*,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
     </div>
     <div id="up-list"></div>
     <div class="field" style="margin-top:12px"><label>课程标题（留空则用第一个文件名）</label>
@@ -5991,8 +6223,19 @@ function splitRangeSegments(spec) {
 // the lessons: one per split segment, one merged lesson, or one per file.
 async function runUpload(files, opts) {
   const dst = opts.dst;
-  const valid = files.filter((f) => /\.(pptx?|pdf)$/i.test(f.name));
-  if (!valid.length) { toast("请选择 .pptx 或 .pdf 文件", "error"); return; }
+  // Images are their own kind of upload: one page per image, no server parse, and a
+  // page with no text layer is exactly what the vision model reads. A photographed
+  // paper therefore behaves like a scanned handout, and several photos merge into one
+  // multi-page lesson.
+  const images = files.filter((f) => /^image\//i.test(f.type || "") || /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i.test(f.name || ""));
+  if (images.length) {
+    await saveImageLesson(images, { autoGen: opts.autoGen, title: opts.title || "", brief: opts.brief || "" });
+  }
+  const valid = files.filter((f) => /\.(pptx?|pdf|docx)$/i.test(f.name || ""));
+  if (!valid.length) {
+    if (!images.length) toast("请选择 .pptx / .pdf / .docx，或直接传图片", "error");
+    return;
+  }
   const compress = opts.compress || "medium";
   const segments = (opts.rangeMode === "split") ? splitRangeSegments(opts.pages) : [];
 
@@ -7119,6 +7362,271 @@ async function generateFiguresOnly(lessonId) {
   fullLessonCache.set(lesson.id, lesson);
   pm.done("配图完成", "查看课程", () => openLesson(lessonId, "points"));
   toast("配图已更新 ✓", "success");
+}
+
+/* ---------------- Exam paper / problem set ----------------
+ * Upload the paper as an ordinary lesson (typed PDF, scanned handout or a photo of the
+ * page), then run this. It reads the pages, keeps every question verbatim, and builds
+ * the sheet the student studies from: everything each question tests with explanations
+ * first, then the questions, then the answers and full worked solutions.
+ *
+ * The knowledge points it produces are ordinary points, so the paper also joins the
+ * normal spaced-repetition queue — the point records remember which question they came
+ * from (qrefs), which is what lets the sheet group them by question. */
+async function generatePaper(lessonId) {
+  const lesson = await db.get("lessons", lessonId);
+  if (!lesson) return;
+  const pm = progressPanel((lesson.title || "试卷") + " · 试卷解析");
+  const cfg = await api.getConfig();
+  const hasVision = !!cfg.has_vision_key;
+  let step = 0;
+
+  // Pages whose text layer cannot carry them — a scan, a photo, a broken encoding —
+  // must be read by vision first, or the questions would be extracted from blank pages.
+  const scanned = (lesson.slides || []).filter(
+    (s) => (s.images || []).some((im) => im.dataUrl && im.kind !== "logo") && slideTextProblem(s)
+  );
+  if (scanned.length) {
+    if (hasVision) {
+      pm.addStep(`OCR ${scanned.length} page${scanned.length > 1 ? "s" : ""} without usable text (vision)`);
+      pm.setStep(step, "running");
+      let done = 0;
+      await parallelMap(scanned, 8, async (s) => {
+        if (pm.isCancelled()) return;
+        const img = (s.images || []).find((im) => im.kind === "page")
+          || (s.images || []).filter((im) => im.dataUrl && im.kind !== "logo")
+               .sort((a, b) => (b.dataUrl || "").length - (a.dataUrl || "").length)[0];
+        const r = await api.vision(img.dataUrl, ocrPrompt);
+        if (r && r.usage) pm.addTokens(r.usage.total_tokens);
+        if (!r.error) {
+          const p = parseJSON(r.content);
+          const read = p && p.text ? String(p.text).trim() : "";
+          if (read) {
+            const old = String(s.text || "");
+            if (slideTextProblem(s) === "broken" && read.length >= Math.max(20, old.length * 0.4)) s.text = read;
+            else s.text = old ? old + "\n" + read : read;
+          }
+        }
+        done++;
+        pm.msg(`Reading pages ${done}/${scanned.length}…`);
+        pm.setProgress((done / scanned.length) * 0.12);
+      });
+      pm.setStep(step, "done");
+    } else {
+      pm.addStep(`${scanned.length} page(s) without usable text — skipped (no vision key)`);
+      pm.setStep(step, "done");
+    }
+    step++;
+  }
+
+  const slides = (lesson.slides || []).filter((s) => String(s.text || "").trim() || (s.images || []).length);
+  if (!slides.length) {
+    pm.close();
+    toast("这个文件里没有可读的内容（没有文字层，也没有可识别的页图片）", "error");
+    return;
+  }
+
+  // ---- 1. the questions, exactly as printed -------------------------------
+  pm.addStep("Extract the questions exactly as printed");
+  pm.setStep(step, "running");
+  const pageBatch = 4;
+  const pageGroups = [];
+  for (let i = 0; i < slides.length; i += pageBatch) pageGroups.push(slides.slice(i, i + pageBatch));
+  const pagesText = (group) => group.map((s) => `[Page ${(s.index != null ? s.index : 0) + 1}]\n${String(s.text || "").trim() || "(this page has no text layer — read the image)"}`).join("\n\n---\n\n");
+  const extracted = await parallelMap(pageGroups, 4, async (group) => {
+    if (pm.isCancelled()) return [];
+    let got = [];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (pm.isCancelled()) return got;
+      const r = await api.llm([{ role: "system", content: SYS }, { role: "user", content: paperExtractPrompt(pagesText(group), attempt > 0) }], { json_mode: true, max_tokens: 12000 });
+      if (r && r.usage) pm.addTokens(r.usage.total_tokens);
+      if (r.error) { pm.msg("第 " + ((group[0].index != null ? group[0].index : 0) + 1) + " 页起抽取失败：" + r.error); return got; }
+      const parsed = parseJSON(r.content);
+      got = parsed && Array.isArray(parsed.questions) ? parsed.questions : [];
+      // A page group that clearly holds text but yielded nothing is worth one retry.
+      const hasText = group.some((s) => String(s.text || "").trim().length > 120);
+      if (got.length || !hasText) break;
+    }
+    return got;
+  });
+
+  const seen = new Set();
+  const questions = [];
+  extracted.forEach((list) => (list || []).forEach((q) => {
+    if (!q || !String(q.stem || "").trim()) return;
+    const key = normStem(q.stem);
+    if (key && seen.has(key)) return;
+    if (key) seen.add(key);
+    questions.push({
+      n: String(q.n || questions.length + 1).trim(),
+      stem: String(q.stem).trim(),
+      options: Array.isArray(q.options) ? q.options.map((o) => String(o).trim()).filter(Boolean) : [],
+      givenAnswer: String(q.givenAnswer || "").trim(),
+      givenSolution: String(q.givenSolution || "").trim(),
+      page: Number.isFinite(Number(q.page)) ? Number(q.page) : ((slides[0] && slides[0].index != null) ? slides[0].index : 0),
+    });
+  }));
+  if (!questions.length) {
+    pm.setStep(step, "error");
+    pm.close();
+    toast("没能在文件里找到题目 —— 如果这是扫描件，请确认已在设置里填好视觉模型的 API Key（扫描页需要视觉识别）", "error");
+    return;
+  }
+  questions.sort((a, b) => (a.page - b.page) || 0);
+  pm.setStep(step, "done");
+  pm.msg(`找到 ${questions.length} 道题`);
+  step++;
+
+  // ---- 2. what each question tests, and how to solve it -------------------
+  pm.addStep("Knowledge points, answers and worked solutions");
+  pm.setStep(step, "running");
+  const qBatch = 3;
+  const qGroups = [];
+  for (let i = 0; i < questions.length; i += qBatch) qGroups.push(questions.slice(i, i + qBatch));
+  const qText = (group) => group.map((q) => {
+    const lines = [`[${q.n}] ${q.stem}`];
+    if (q.options.length) lines.push("Options: " + q.options.join(" | "));
+    if (q.givenAnswer) lines.push("The paper's own answer key says: " + q.givenAnswer);
+    return lines.join("\n");
+  }).join("\n\n");
+  const studied = await parallelMap(qGroups, 4, async (group) => {
+    if (pm.isCancelled()) return [];
+    const r = await api.llm([{ role: "system", content: SYS }, { role: "user", content: paperStudyPrompt(qText(group)) }], { json_mode: true, max_tokens: 14000 });
+    if (r && r.usage) pm.addTokens(r.usage.total_tokens);
+    if (r.error) { pm.msg("解析失败：" + r.error); return []; }
+    const parsed = parseJSON(r.content);
+    return parsed && Array.isArray(parsed.items) ? parsed.items : [];
+  });
+  // Matching by the printed number alone is not enough: the paper numbers its questions
+  // "第1题" and the model echoes "1", so the digits are compared and each group of
+  // questions falls back to plain position. Items are never dropped on a mismatch —
+  // a missing knowledge point is invisible, a mis-assigned one is worse.
+  const numKey = (v) => {
+    const m = String(v == null ? "" : v).match(/\d+/);
+    return m ? String(Number(m[0])) : String(v == null ? "" : v).trim().toLowerCase();
+  };
+
+  let matched = 0;
+  qGroups.forEach((group, gi) => {
+    const items = (studied[gi] || []).filter(Boolean);
+    const byKey = new Map();
+    items.forEach((it) => { const k = numKey(it.n); if (k && !byKey.has(k)) byKey.set(k, it); });
+    const taken = new Set();
+    group.forEach((q, qi) => {
+      let it = byKey.get(numKey(q.n));
+      if (it && taken.has(it)) it = null;
+      if (!it) it = items.find((x) => !taken.has(x) && numKey(x.n) === numKey(q.n));
+      if (!it) it = (items[qi] && !taken.has(items[qi])) ? items[qi] : items.find((x) => !taken.has(x));
+      if (!it) return;
+      taken.add(it);
+      matched++;
+      applyPaperItem(q, it);
+    });
+  });
+  const returned = studied.reduce((n, list) => n + ((list || []).length), 0);
+  pm.msg(`分批返回 ${returned} 条解析，匹配到 ${matched}/${questions.length} 道题`);
+  // A question with no knowledge points is the one thing this feature must not ship —
+  // the student studies those points before attempting it. Any question that came back
+  // empty (or without points) is asked again on its own, where it is the only thing the
+  // model has to think about.
+  let hollow = questions.filter((q) => !(q.points || []).length || !q.solution);
+  if (hollow.length) {
+    pm.msg(`补齐 ${hollow.length} 道题的考点与解析…`);
+    // Sequential, three attempts, and the last attempt asks ONLY for the knowledge
+    // points: two attempts in parallel left a question empty on one server while the
+    // same call succeeded on another, and the points are the part that must not be lost.
+    await repairQuestions(hollow, 3, pm);
+    hollow = questions.filter((q) => !(q.points || []).length || !q.solution);
+  }
+  const without = hollow.length;
+  pm.setStep(step, "done");
+  step++;
+
+  // ---- 3. save: points become ordinary reviewable points -------------------
+  pm.addStep("Save the sheet");
+  pm.setStep(step, "running");
+  const byTitle = new Map();
+  const points = [];
+  questions.forEach((q) => {
+    (q.points || []).forEach((p) => {
+      const key = normPointTitle(p.title);
+      if (key && byTitle.has(key)) {
+        const rec = byTitle.get(key);
+        if (!rec.qrefs.includes(q.n)) rec.qrefs.push(q.n);
+        if (!rec.keyTerms.length && (q.keyTerms || []).length) rec.keyTerms = q.keyTerms.slice(0, 6);
+        return;
+      }
+      const rec = {
+        title: p.title,
+        explanation: p.explanation || "",
+        slide: q.page,
+        importance: "medium",
+        keyTerms: (q.keyTerms || []).slice(0, 6),
+        qrefs: [q.n],
+      };
+      if (key) byTitle.set(key, rec);
+      points.push(rec);
+    });
+  });
+  const prevPaper = lesson.paperQuestions || [];
+  lesson.paper = true;
+  lesson.paperQuestions = questions.map((q) => ({
+    n: q.n,
+    stem: q.stem,
+    options: q.options,
+    answer: q.answer || "",
+    solution: q.solution || "",
+    keyTerms: q.keyTerms || [],
+    points: (q.points || []).map((p) => p.title),
+    page: q.page,
+    givenAnswer: q.givenAnswer || "",
+  }));
+  lesson.points = points;
+  lesson.updatedAt = Date.now();
+  await db.put("lessons", lesson);
+
+  // Verify what was actually stored. A paper whose question has no knowledge points is
+  // the one outcome this feature cannot ship, and "load, look, repair, save again" is the
+  // only way to be sure on a server that behaved differently from the last one.
+  pm.addStep("Verify the sheet");
+  pm.setStep(step, "running");
+  const stored = await db.get("lessons", lessonId);
+  const empty = (stored.paperQuestions || []).filter((q) => !(q.points || []).length);
+  if (empty.length) {
+    pm.msg(`${empty.length} 道题没有考点，正在单独补齐…`);
+    const toFix = empty.map((q) => questions.find((x) => String(x.n) === String(q.n)) || q);
+    const fixed = await repairQuestions(toFix, 3, pm);
+    if (fixed.length) {
+      const have = new Map(points.map((p) => [normPointTitle(p.title), p]));
+      fixed.forEach((q) => (q.points || []).forEach((p) => {
+        const key = normPointTitle(p.title);
+        if (key && have.has(key)) {
+          const rec = have.get(key);
+          if (!rec.qrefs.includes(q.n)) rec.qrefs.push(q.n);
+          return;
+        }
+        const rec = { title: p.title, explanation: p.explanation || "", slide: q.page, importance: "medium", keyTerms: (q.keyTerms || []).slice(0, 6), qrefs: [q.n] };
+        if (key) have.set(key, rec);
+        points.push(rec);
+      }));
+      lesson.points = points;
+      lesson.paperQuestions = questions.map((q) => ({
+        n: q.n, stem: q.stem, options: q.options, answer: q.answer || "", solution: q.solution || "",
+        keyTerms: q.keyTerms || [], points: (q.points || []).map((p) => p.title), page: q.page, givenAnswer: q.givenAnswer || "",
+      }));
+      await db.put("lessons", lesson);
+      pm.msg(`补齐 ${fixed.length} 道题，共 ${points.length} 个考点`);
+    }
+  }
+  const stillEmpty = (questions.filter((q) => !(q.points || []).length)).length;
+  pm.setStep(step, "done");
+  step++;
+  pm.done(`已解析 ${questions.length} 道题、${points.length} 个考点${stillEmpty ? `（${stillEmpty} 题仍缺考点，可再点一次）` : ""}`, "查看试卷", () => {
+    currentTab = "paper";
+    renderLessonDetail();
+  });
+  toast(`试卷解析完成：${questions.length} 题 / ${points.length} 考点 ✓`, "success");
+  if (without) toast(`${without} 道题没有生成解题思路，可以再点一次「试卷解析」补齐`, "error");
 }
 
 async function regenerateQuiz(lessonId) {

@@ -798,3 +798,21 @@ body.pet-hidden #pet-show { display: inline-flex; }
   #view .slide-nav { min-height: 38px; }
   select.search-select { min-height: 38px; }
 }
+
+/* ---------- Exam paper sheet ----------
+ * The sheet is read top to bottom in a fixed order (points, then questions, then
+ * answers), so it needs its own quiet styling rather than the card grid the other tabs
+ * use. Answer options stay full-width buttons because the sheet is often read on a
+ * phone, and marking one must be a comfortable tap. */
+.paper-block { border: 1px solid var(--border); border-radius: 12px; margin: 0 0 10px; padding: 4px 14px 10px; background: var(--surface); }
+.paper-block > summary { cursor: pointer; padding: 8px 0; font-weight: 700; list-style: none; }
+.paper-block > summary::-webkit-details-marker { display: none; }
+.paper-block > summary::before { content: "▸ "; color: var(--brand); }
+.paper-block[open] > summary::before { content: "▾ "; }
+.paper-point { border-left: 3px solid var(--brand); padding: 2px 0 2px 12px; margin: 10px 0; }
+.paper-body { line-height: 1.75; margin-top: 4px; }
+.paper-answer { border-top: 1px dashed var(--border); padding-top: 8px; }
+.paper-opt { border-radius: 10px; }
+.paper-opt-right { border-color: #16a34a !important; color: #15803d !important; }
+.paper-opt-wrong { border-color: #dc2626 !important; color: #b91c1c !important; }
+.paper-question .paper-verdict { min-height: 18px; }

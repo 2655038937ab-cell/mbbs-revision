@@ -835,3 +835,11 @@ body.pet-hidden #pet-show { display: inline-flex; }
 .paper-opt-wrong { border-color: #dc2626 !important; color: #b91c1c !important; }
 .paper-question .paper-verdict { min-height: 18px; line-height: 1.8; }
 .paper-quote { margin: 7px 0 5px; padding: 8px 13px; border-left: 3px solid var(--accent, #f59e0b); background: rgba(245, 158, 11, .08); border-radius: 0 8px 8px 0; font-size: 13.5px; line-height: 1.85; }
+
+/* ---------- Option-by-option explanation ----------
+ * One row per option, with the correct one picked out in green: that row is what a
+ * student scans for, and the wrong rows keep a quiet left rule so the block still reads
+ * as a list rather than as prose. */
+.q-opt-line { padding: 6px 11px; margin: 5px 0; border-left: 3px solid var(--border); border-radius: 0 8px 8px 0; line-height: 1.85; }
+.q-opt-line.is-correct { border-left-color: #16a34a; background: rgba(22, 163, 74, .09); color: #15803d; font-weight: 600; }
+.ok-text { color: #15803d; font-weight: 600; }

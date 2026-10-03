@@ -1499,6 +1499,7 @@ SELF-CHECK each question before returning it — this is where these questions m
 - Never use "以上都对 / 以上都错 / A 和 B 都对 / 以上都不是" style options. They collapse the question into a guess.
 - Make each distractor a PLAUSIBLE mistake rather than random nonsense: base it on a confusion a student could genuinely have (mixing up two structures, reversing a direction, swapping the regulator, using the wrong relation, forgetting a factor) so the explanation can teach by correcting it.
 - Vary the DEPTH across the set: some items should test a fact that simply has to be known, others should require applying or reasoning about it. Do not make every item the same depth.
+- No two options may be the SAME EXPRESSION written differently, and no wrong option may be algebraically equal to the correct one. Watch for the traps that produce this: ln(a/b) equals −ln(b/a); 1/(x/y) equals y/x; a negative exponent equals the reciprocal; k·ln(a/b) with the logarithm's fraction inverted and the sign flipped is the same number. Before returning a question, check every pair of options for that; if two are equal, rewrite one of them so it differs by a factor, a sign, or an exponent that actually changes the value.
 - Every stem must stand on its own: a student should understand what is being asked before reading the options. Do not write stems whose answer is "it depends" without saying what it depends on.
 - Prefer POSITIVE questions ("Which… is a…", "What structure…"). Use an exclusion "NOT / EXCEPT" item ONLY when the key points explicitly list a closed set of members and exactly one is genuinely excluded — and state that boundary using ONLY the key points' own wording.
 - Keep every term to the exact name used in the key points.
@@ -1672,6 +1673,28 @@ const QUIZ_META = new RegExp(QUIZ_JUNK_STEM.join("|"), "i");
  * bank cleaner reads this same literal and, where the offending option is only a
  * distractor, removes just that option instead of the whole question. */
 const QUIZ_BANNED_OPTION = /all\s+of\s+the\s+above|none\s+of\s+the\s+above|\bboth\s+a\s+and\s+b\b|以上(都|均)对?|以上都不是|a\s*和\s*b\s*都/i;
+/* Canonical form of a log expression, so that −k·ln(a/b) and k·ln(b/a) — the same number —
+ * compare equal. Anything that does not look like a single log of a fraction is returned
+ * unchanged and therefore only matches an identical string. */
+function canonLogForm(option) {
+  const t = String(option == null ? "" : option)
+    .replace(/\s+/g, "")
+    .replace(/\$/g, "")
+    .replace(/\\left|\\right|\\,|\\!|\\;/g, "")
+    .replace(/\\ln|\\log/g, "ln");
+  // The left-hand side stays as written ("E_X=" is the same on every option); only the
+  // expression after it is canonicalised.
+  const m = t.match(/^([^=]*=)?(-?)([^l=]*)ln(?:\\frac\{([^}]+)\}\{([^}]+)\}|\[([^\]]+)\]\/\[([^\]]+)\]|\(([^)]+)\)\/\(([^)]+)\)|\{([^}]+)\}\/([^}]+))/);
+  if (!m) return t;
+  const lhs = m[1] || "";
+  const sign = m[2] === "-" ? -1 : 1;
+  const pre = m[3] || "";
+  const a = m[4] || m[6] || m[8] || m[10] || "";
+  const b = m[5] || m[7] || m[9] || m[11] || "";
+  if (!a || !b) return t;
+  return sign < 0 ? `${lhs}+${pre}|${b}/${a}` : `${lhs}+${pre}|${a}/${b}`;
+}
+
 /* Attribution questions. "Who discovered X / in which year / which scientist won the
  * Nobel" test recall of names and dates, not medicine: the prompt forbids them and the
  * model still wrote them. Anchoring "who" to the START of the stem is what keeps this
@@ -1732,6 +1755,13 @@ function quizQuestionInvalid(q, lenient = false) {
   // item whenever it is the correct choice, because then nothing in the options is
   // the fact being tested.
   if (q.options.some((o) => QUIZ_BANNED_OPTION.test(String(o)))) return true;
+  // Two options that spell the same expression differently are two correct answers, not a
+  // question: the student who picks the variant the key did not choose is marked wrong for
+  // being right. The prompt forbids it; the prompt is also what produced it.
+  {
+    const forms = q.options.map((o) => canonLogForm(o));
+    if (new Set(forms).size !== forms.length) return true;
+  }
   // Four copies of the same choice (seen in a real bank: one citation repeated in
   // every slot) is not a question.
   if (new Set(q.options.map((o) => String(o))).size !== n) return true;

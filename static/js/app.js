@@ -1170,7 +1170,11 @@ async function loadAppConfig() {
 function applyModeBanner() {
   const trial = !!(appConfig && appConfig.trial && !appConfig.trial_owner);
   const open = !!(appConfig && appConfig.open);
-  const mode = trial ? "trial" : (open ? "open" : "");
+  // Open mode gets no notice at all: the owner opened the site for themselves, and a
+  // permanent sidebar box telling them they are not logged in is just noise on top of
+  // the page. Trial mode keeps its notice, because a visitor there cannot guess why the
+  // AI buttons are refusing them.
+  const mode = trial ? "trial" : "";
   // Log out only means something once there is a password to log back in with.
   const lo = document.getElementById("btn-logout");
   if (lo) lo.style.display = open ? "none" : "";
@@ -1181,10 +1185,8 @@ function applyModeBanner() {
   const el = document.createElement("div");
   el.id = "trial-banner";
   el.dataset.mode = mode;
-  el.className = "trial-banner" + (mode === "open" ? " open-banner" : "");
-  el.innerHTML = mode === "trial"
-    ? "<b>试用版</b> · 可自由浏览全部课程<br><span>AI 生成 / 上传 / 导出需要密码</span>"
-    : "<b>免密模式</b> · 本机使用无需登录<br><span>想加密码：设置 → Account</span>";
+  el.className = "trial-banner";
+  el.innerHTML = "<b>试用版</b> · 可自由浏览全部课程<br><span>AI 生成 / 上传 / 导出需要密码</span>";
   const nav = document.getElementById("nav");
   if (nav && nav.parentElement) nav.parentElement.insertBefore(el, nav.nextSibling);
 }

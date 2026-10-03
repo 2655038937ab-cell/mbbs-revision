@@ -4062,6 +4062,41 @@ function paperAnswerText(t) {
     .trim();
 }
 
+/* One line per option, in A→F order.
+ *
+ * A quiz explanation arrives as a single paragraph — "选项A正确：…。选项B错误：…。选项C…" —
+ * so checking your own reasoning means hunting for the option you got wrong in the middle
+ * of a wall of text, and the model does not always walk the options in order. The
+ * explanation is therefore split at each option marker and the rows are sorted. A marker
+ * that sits inside a sentence ("见选项B的分析") is not a line start, so ordinary prose is
+ * left alone. Fewer than two markers means there is nothing to split and the text is
+ * returned untouched. */
+function splitOptionNotes(t) {
+  const text = String(t == null ? "" : t);
+  if (!text.trim()) return text;
+  const re = /选项\s*([A-F])|(?:^|[\s。；;，,])([A-F])[.．、:：)）]/g;
+  const marks = [];
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const letter = (m[1] || m[2] || "").toUpperCase();
+    if (!letter) continue;
+    // The row must start at the marker itself ("选项B错误：…"), not at its letter, or the
+    // word 选项 is left dangling at the end of the previous row.
+    // "选项B错误" starts at 选项; a bare "B." starts at its letter (the match includes the
+    // punctuation that precedes it).
+    const start = m[1] ? m.index : m.index + m[0].search(/[A-F]/);
+    marks.push({ letter, start });
+  }
+  if (marks.length < 2) return text;
+  const head = text.slice(0, marks[0].start).trim();
+  const rows = marks.map((mk, i) => ({
+    letter: mk.letter,
+    body: text.slice(mk.start, i + 1 < marks.length ? marks[i + 1].start : text.length).replace(/\s+/g, " ").trim(),
+  }));
+  const sorted = rows.slice().sort((a, b) => (a.letter < b.letter ? -1 : a.letter > b.letter ? 1 : 0));
+  return [head, ...sorted.map((r) => r.body)].filter(Boolean).join("\n\n");
+}
+
 /* A paper's own numbering is kept verbatim for display ("第1题", "3(a)", "Q4"), so the
  * template must not wrap it in another "第 … 题". */
 function paperLabel(n) {
@@ -4133,7 +4168,7 @@ function renderPaperTab(body, lesson) {
       <div class="paper-answer">
         <div class="paper-label">答案</div>
         <div class="paper-answer-body">${correct ? md(paperAnswerText(correct)) : "<span class=\"sub\">（未生成）</span>"}</div>
-        ${q.solution ? `<div class="paper-label" style="margin-top:18px">解题思路</div><div class="paper-body">${md(paperAnswerText(q.solution))}</div>` : `<div class="sub" style="margin-top:14px">这道题还没有解题思路，点工具条里的「🧪 试卷解析」可以重新生成。</div>`}
+        ${q.solution ? `<div class="paper-label" style="margin-top:18px">解题思路</div><div class="paper-body">${md(splitOptionNotes(paperAnswerText(q.solution)))}</div>` : `<div class="sub" style="margin-top:14px">这道题还没有解题思路，点工具条里的「🧪 试卷解析」可以重新生成。</div>`}
         ${q.givenAnswer ? `<div class="paper-note">试卷原文给出的答案：${escapeHtml(q.givenAnswer)}</div>` : ""}
       </div>
     </details>`;
@@ -5341,7 +5376,7 @@ function renderQuizTab(body, lesson, quiz) {
           <div style="font-weight:600;flex:1;min-width:0">Q${i + 1}. ${mdInline(q.question)} ${answered ? `<span style="font-size:12px">${ok ? "✅" : "❌"}</span>` : ""}</div>
           ${favButton(i, lesson.id, q)}
         </div>
-        ${answered ? `<details style="margin-bottom:8px"><summary class="sub" style="cursor:pointer">查看你的答题与解析</summary><div class="q-expl ${ok ? "correct" : "wrong"}" style="margin-top:8px">你的答案：${mdInline(q.options[ua])} · 正确答案：${mdInline(q.options[q.answer])}<br>${mdFull(q.explanation || "")}</div></details>` : ""}
+        ${answered ? `<details style="margin-bottom:8px"><summary class="sub" style="cursor:pointer">查看你的答题与解析</summary><div class="q-expl ${ok ? "correct" : "wrong"}" style="margin-top:8px">你的答案：${mdInline(q.options[ua])} · 正确答案：${mdInline(q.options[q.answer])}<br>${mdFull(splitOptionNotes(q.explanation))}</div></details>` : ""}
         <ol style="margin:0;padding-left:20px;color:var(--text-2)">${q.options.map((o, j) => `<li style="${j === q.answer ? "color:var(--green);font-weight:600" : ""}${answered && j === ua && ua !== q.answer ? "color:var(--red);font-weight:600" : ""}">${mdInline(o)}${j === q.answer ? " ✓" : ""}${answered && j === ua ? " ← 你的选择" : ""}</li>`).join("")}</ol>
       </div>`;
     }).join("")}</div>
@@ -5474,7 +5509,7 @@ function renderQuizPreview(body, lesson, quiz) {
         ${quizPreview.show ? `
           <div class="q-expl correct" style="margin-top:0">
             <b>正确答案：${mdInline((q.options || [])[q.answer] || "")}</b><br>
-            ${mdFull(q.explanation || "")}
+            ${mdFull(splitOptionNotes(q.explanation))}
           </div>
           <button class="btn btn-ghost btn-sm" id="qv-hide" style="margin-top:10px">🙈 隐藏答案</button>`
         : `<button class="btn btn-accent" id="qv-show">👁 显示答案与解析</button>
@@ -5709,7 +5744,7 @@ function renderQuizReview(body, lesson, quiz) {
           ? `<div class="q-expl" style="margin-top:0"><b>这次没有作答</b><br>正确答案：${mdInline((q.options || [])[q.answer] || "")}</div>`
           : `<div class="q-expl ${ok ? "correct" : "wrong"}" style="margin-top:0">
                <b>${ok ? "✓ 你答对了" : "✗ 你答错了"}</b> · 你的答案：${mdInline((q.options || [])[ua] || "")} · 正确答案：${mdInline((q.options || [])[q.answer] || "")}
-               ${q.explanation ? `<div style="margin-top:10px">${mdFull(q.explanation)}</div>` : ""}
+               ${q.explanation ? `<div style="margin-top:10px">${mdFull(splitOptionNotes(q.explanation))}</div>` : ""}
              </div>`}
       </div>
     </div>
@@ -8070,7 +8105,7 @@ function quizFeedbackHtml(lesson, q, ua, correct, showPick) {
   const pick = showPick && ua != null
     ? `你的答案：${mdInline((q.options || [])[ua] || "")} · 正确答案：${mdInline((q.options || [])[q.answer] || "")}<br>`
     : "";
-  return `<div class="q-expl ${correct ? "correct" : "wrong"}"><b>${correct ? "✓ 回答正确" : "✗ 回答错误"}</b><br>${pick}${mdFull(q.explanation || "")}</div>${figHtml}`;
+  return `<div class="q-expl ${correct ? "correct" : "wrong"}"><b>${correct ? "✓ 回答正确" : "✗ 回答错误"}</b><br>${pick}${mdFull(splitOptionNotes(q.explanation))}</div>${figHtml}`;
 }
 
 /* Which slide should "本题相关 slide" open for this question?
@@ -8340,7 +8375,7 @@ function showReviewCard() {
         <div id="r-grades" hidden style="margin-top:16px">
           ${userText != null ? `<div class="q-expl wrong" style="margin-bottom:8px"><b>✗ 你的答案:</b> ${escapeHtml(userText)}</div>` : ""}
           <div class="q-expl correct" style="margin-bottom:8px"><b>✓ 正确答案:</b> ${escapeHtml(correctText)}</div>
-          ${m.explanation ? `<div class="q-expl">${mdFull(m.explanation)}</div>` : ""}
+          ${m.explanation ? `<div class="q-expl">${mdFull(splitOptionNotes(m.explanation))}</div>` : ""}
           <div class="review-grade" style="margin-top:16px">
             <button class="grade-btn grade-0" data-ok="0"><span>还是不会</span><span class="g-key">1</span></button>
             <button class="grade-btn grade-2" data-ok="1"><span>已经会了</span><span class="g-key">2</span></button>
@@ -8567,7 +8602,7 @@ function mistakeRow(m) {
       </div>
       <div style="font-weight:600">${mdInline(m.question)}</div>
       ${opts}
-      ${m.explanation ? `<div class="q-expl" style="margin-top:8px">${mdFull(m.explanation)}</div>` : ""}
+      ${m.explanation ? `<div class="q-expl" style="margin-top:8px">${mdFull(splitOptionNotes(m.explanation))}</div>` : ""}
     </div>`;
 }
 
@@ -8607,7 +8642,7 @@ function showMistakeCard() {
       <div class="card" style="margin-bottom:14px"><div style="font-weight:600;font-size:16px">${mdInline(m.question)}</div></div>
       <div id="mr-reveal" hidden>
         <div class="q-expl correct" style="margin-bottom:12px"><b>✓ 回答正确 answer:</b> ${mdInline(m.options ? m.options[m.answer] : m.answer)}</div>
-        ${m.explanation ? `<div class="q-expl">${mdFull(m.explanation)}</div>` : ""}
+        ${m.explanation ? `<div class="q-expl">${mdFull(splitOptionNotes(m.explanation))}</div>` : ""}
         <button class="btn btn-ghost btn-sm" id="mr-goto" style="margin-top:10px">📖 看对应的知识点${m.pointTitle ? `：${escapeHtml(m.pointTitle)}` : ""}</button>
         <div class="review-grade" style="margin-top:16px">
           <button class="grade-btn grade-0" id="mr-miss">还是不会</button>

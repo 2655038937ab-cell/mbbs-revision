@@ -2004,9 +2004,9 @@ ${pages}`;
 const paperPointsPrompt = (questions) => `These questions could not be turned into usable study material, so return ONLY the knowledge points each one tests — the part a student studies BEFORE attempting it.
 
 ${languageReminder()}
-For every question return "points": 2 to 6 knowledge points, no padding. Each is {"title": ..., "explanation": ...}: the title names the concept specifically in the course's own language, and the explanation TEACHES it in 2-5 sentences — what it is, how it works, and the part this question turns on. Never mention the answer and never write "本题".
+For every question return "points": 2 to 6 knowledge points, no padding. Each is {"title": ..., "explanation": ..., "quote": ..., "why": ...}: the title names the concept specifically in the course's own language; "quote" copies the EXACT words in the question that make the point necessary (5-40 characters, verbatim); "why" is one sentence on what that fragment demands; and the explanation TEACHES the concept in 2-5 sentences — what it is, how it works, and the part this question turns on. Never mention the answer and never write "本题". A concept that no phrase in the question actually requires is left out.
 
-Return JSON: {"items":[{"n":"copy the identifier in brackets EXACTLY","points":[{"title":"...","explanation":"..."}]}]}
+Return JSON: {"items":[{"n":"copy the identifier in brackets EXACTLY","points":[{"title":"...","explanation":"...","quote":"...","why":"..."}]}]}
 
 Questions:
 ${questions}`;
@@ -2017,10 +2017,13 @@ SOME ITEMS WERE REJECTED BY AN AUTOMATIC CHECK, usually because an explanation r
 
 ${languageReminder()}
 For EVERY question return:
-- "points": the knowledge points this question tests, 2 to 6 of them, no padding and no filler. Each is {"title": ..., "explanation": ...}:
+- "points": the knowledge points this question tests, 2 to 6 of them, no padding and no filler. Each is {"title": ..., "explanation": ..., "quote": ..., "why": ...}:
   - "title": the concept named specifically, in the course's own language ("钠钾泵的化学计量", not "细胞膜"; "希尔方程的协同系数", not "蛋白质结合").
+  - "quote": the EXACT words in the question that make this point necessary — copy a short fragment verbatim (about 5-40 characters), including the symbol, number or phrase it hinges on ("远处氧浓度为c₀，表面浓度维持为cₛ", "表观 Km 不变", "每孔随机测量20 个不同细胞"). Copy it character for character from the question; do not paraphrase, translate or tidy it.
+  - "why": ONE sentence saying what that fragment demands and why the question cannot be answered without this point ("球对称加稳态才能把三维扩散方程化成一维常微分方程，后面所有推导都建立在这一步上"). Name the part of the question it comes from, never the answer.
   - "explanation": 2-5 sentences that TEACH the concept — what it is, how it works, and the part this question turns on. Write it for someone who has not attempted the question yet: explain the concept itself. Never mention the answer, never write "本题" or "这道题".
-  - The same concept must not appear twice across the paper under different wording.
+  - Every point must be forced by a specific fragment: if a concept is only general background that no phrase in the question actually requires, leave it out rather than padding the list.
+  - The same concept must not appear twice across the paper under different wording, and each point is listed once per question it is needed by.
 - "answer": for multiple choice, the correct option letter ("B"); otherwise the complete model answer, with the final value and its units when the question is numerical.
 - "solution": the full solution in the order a student should think, 3-8 steps: what is given and what is asked; which principle, definition or relation applies and WHY; each algebraic or logical step; the final result with units. For multiple choice also say why each other option is wrong, referring to them as 选项A / 选项B (never a bare letter). Never just restate the answer.
 - "keyTerms": 2-6 terms the student's own explanation should contain (they become a self-check list).
@@ -2029,7 +2032,7 @@ Anchor everything in the subject matter itself. Never cite who discovered someth
 
 "n" is the identifier given for that question in square brackets below — copy it EXACTLY as written (it may be "第1题", "3(a)" or "Q4"), because it is how each item is matched back to its question.
 
-Return JSON: {"items":[{"n":"1","points":[{"title":"...","explanation":"..."}],"answer":"...","solution":"...","keyTerms":["..."],"answerFromPaper":true}]}
+Return JSON: {"items":[{"n":"1","points":[{"title":"...","explanation":"...","quote":"...","why":"..."}],"answer":"...","solution":"...","keyTerms":["..."],"answerFromPaper":true}]}
 
 Questions:
 ${questions}`;
@@ -3999,7 +4002,12 @@ function applyPaperItem(q, it) {
   const pts = it.points || it.knowledgePoints || it.knowledge_points;
   const points = (Array.isArray(pts) ? pts : [])
     .filter((p) => p && String(p.title || "").trim())
-    .map((p) => ({ title: String(p.title).trim(), explanation: String(p.explanation || p.detail || "").trim() }));
+    .map((p) => ({
+      title: String(p.title).trim(),
+      explanation: String(p.explanation || p.detail || "").trim(),
+      quote: String(p.quote || p.fromQuestion || p.evidence || "").trim(),
+      why: String(p.why || p.reason || "").trim(),
+    }));
   if (answer) q.answer = answer;
   if (solution) q.solution = solution;
   if (points.length) q.points = points;
@@ -4059,24 +4067,36 @@ function renderPaperTab(body, lesson) {
     body.innerHTML = `<div class="card"><div class="sub">这份文件还没有解析成试卷。点课程工具条里的「🧪 试卷解析」——AI 会把原题逐字提取出来，列出每道题考的考点并讲解，再写出答案和完整解题思路。</div></div>`;
     return;
   }
+  // qrefs is [{n, quote, why}] for papers built by this version, and was a bare list of
+  // question numbers before — both shapes are read so an existing sheet still renders.
   const byQ = new Map();
-  points.forEach((p) => (p.qrefs || []).forEach((n) => {
-    const k = String(n);
+  points.forEach((p) => (p.qrefs || []).forEach((ref) => {
+    const n = ref && typeof ref === "object" ? ref.n : ref;
+    const k = String(n == null ? "" : n);
+    if (!k) return;
     if (!byQ.has(k)) byQ.set(k, []);
-    byQ.get(k).push(p);
+    byQ.get(k).push({ point: p, link: ref && typeof ref === "object" ? ref : null });
   }));
   const answerOf = (q) => String(q.answer || "").trim();
   const letterOf = (s) => (String(s || "").trim().match(/^[A-Fa-f]/) || [""])[0].toUpperCase();
 
+  // One group per question, and inside it every point says which words of the question
+  // make it necessary — that is what turns a topic list into an answer to "why am I
+  // learning this for THIS question".
   const sec1 = qs.map((q) => {
     const list = byQ.get(String(q.n)) || [];
     return `<details class="paper-block" open>
-      <summary>${escapeHtml(paperLabel(q.n))} <span class="sub">· 考 ${list.length} 个考点</span></summary>
-      ${list.length ? list.map((p) => `<div class="paper-point">
-          <div style="font-weight:700">${escapeHtml(p.title)}</div>
+      <summary>${escapeHtml(paperLabel(q.n))} <span class="sub">· ${list.length} 个必要考点</span></summary>
+      ${list.length ? list.map((entry, i) => {
+        const p = entry.point, link = entry.link || {};
+        return `<div class="paper-point">
+          <div style="font-weight:700">${i + 1}. ${escapeHtml(p.title)}</div>
+          ${link.quote ? `<div class="paper-quote">题目依据：「${escapeHtml(link.quote)}」</div>` : ""}
+          ${link.why ? `<div class="sub" style="margin-top:2px">↳ ${escapeHtml(link.why)}</div>` : ""}
           <div class="paper-body">${md(explanationText(p.explanation))}</div>
           ${(p.keyTerms || []).length ? `<div class="sub" style="margin-top:6px;font-size:12.5px">关键词：${p.keyTerms.map((k) => escapeHtml(String(k))).join(" · ")}</div>` : ""}
-        </div>`).join("") : `<div class="sub">（这一题没有单独的知识点）</div>`}
+        </div>`;
+      }).join("") : `<div class="sub">（这一题没有单独的知识点）</div>`}
     </details>`;
   }).join("");
 
@@ -7549,10 +7569,13 @@ async function generatePaper(lessonId) {
   const points = [];
   questions.forEach((q) => {
     (q.points || []).forEach((p) => {
+      const link = { n: q.n, quote: p.quote || "", why: p.why || "" };
       const key = normPointTitle(p.title);
       if (key && byTitle.has(key)) {
         const rec = byTitle.get(key);
-        if (!rec.qrefs.includes(q.n)) rec.qrefs.push(q.n);
+        const i = rec.qrefs.findIndex((r) => String(r && r.n) === String(q.n));
+        if (i < 0) rec.qrefs.push(link);
+        else if (!rec.qrefs[i].quote && link.quote) rec.qrefs[i] = link;
         if (!rec.keyTerms.length && (q.keyTerms || []).length) rec.keyTerms = q.keyTerms.slice(0, 6);
         return;
       }
@@ -7562,7 +7585,7 @@ async function generatePaper(lessonId) {
         slide: q.page,
         importance: "medium",
         keyTerms: (q.keyTerms || []).slice(0, 6),
-        qrefs: [q.n],
+        qrefs: [link],
       };
       if (key) byTitle.set(key, rec);
       points.push(rec);
@@ -7600,12 +7623,13 @@ async function generatePaper(lessonId) {
       const have = new Map(points.map((p) => [normPointTitle(p.title), p]));
       fixed.forEach((q) => (q.points || []).forEach((p) => {
         const key = normPointTitle(p.title);
+        const link = { n: q.n, quote: p.quote || "", why: p.why || "" };
         if (key && have.has(key)) {
           const rec = have.get(key);
-          if (!rec.qrefs.includes(q.n)) rec.qrefs.push(q.n);
+          if (!rec.qrefs.some((r) => String(r && r.n) === String(q.n))) rec.qrefs.push(link);
           return;
         }
-        const rec = { title: p.title, explanation: p.explanation || "", slide: q.page, importance: "medium", keyTerms: (q.keyTerms || []).slice(0, 6), qrefs: [q.n] };
+        const rec = { title: p.title, explanation: p.explanation || "", slide: q.page, importance: "medium", keyTerms: (q.keyTerms || []).slice(0, 6), qrefs: [link] };
         if (key) have.set(key, rec);
         points.push(rec);
       }));

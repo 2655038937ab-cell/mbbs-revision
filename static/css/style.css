@@ -816,3 +816,4 @@ body.pet-hidden #pet-show { display: inline-flex; }
 .paper-opt-right { border-color: #16a34a !important; color: #15803d !important; }
 .paper-opt-wrong { border-color: #dc2626 !important; color: #b91c1c !important; }
 .paper-question .paper-verdict { min-height: 18px; }
+.paper-quote { margin: 4px 0 2px; padding: 5px 10px; border-left: 3px solid var(--accent, #f59e0b); background: rgba(245, 158, 11, .07); border-radius: 0 8px 8px 0; font-size: 13.5px; }

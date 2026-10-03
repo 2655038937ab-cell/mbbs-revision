@@ -4048,6 +4048,18 @@ async function repairQuestions(list, attempts, pm) {
   return pts;
 }
 
+/* Answers usually arrive as one long paragraph holding every sub-question — "(a) … (b) …
+ * (c) …" — which is unreadable at a glance and was exactly what the sheet showed. The
+ * enumerators are split onto their own lines, but only after a sentence end or at the
+ * start, so a "(a)" that happens to sit inside a formula is left alone. */
+function paperAnswerText(t) {
+  return String(t || "")
+    .replace(/([。；;．.])\s*([（(][a-eA-E][）)])/g, "$1\n\n$2")
+    .replace(/(^|\n)\s*([（(][a-eA-E][）)])/g, "$1\n$2")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /* A paper's own numbering is kept verbatim for display ("第1题", "3(a)", "Q4"), so the
  * template must not wrap it in another "第 … 题". */
 function paperLabel(n) {
@@ -4106,7 +4118,7 @@ function renderPaperTab(body, lesson) {
       <div style="font-weight:700;margin-bottom:8px">${escapeHtml(paperLabel(q.n))}</div>
       <div class="paper-body">${md(q.stem)}</div>
       ${opts.length ? `<div class="paper-options" style="margin-top:10px">
-        ${opts.map((o, i) => `<button class="chip paper-opt" data-q="${escapeHtml(String(q.n))}" data-letter="${escapeHtml(letterOf(o) || String.fromCharCode(65 + i))}" style="display:block;width:100%;text-align:left;margin:6px 0">${escapeHtml(o)}</button>`).join("")}
+        ${opts.map((o, i) => `<button class="chip paper-opt" data-q="${escapeHtml(String(q.n))}" data-letter="${escapeHtml(letterOf(o) || String.fromCharCode(65 + i))}">${mdInline(o)}</button>`).join("")}
       </div>` : `<div class="sub" style="margin-top:8px">（非选择题：自己写答案，写完再对照下面的解题思路）</div>`}
       <div class="paper-verdict sub" style="margin-top:8px"></div>
     </div>`;
@@ -4117,15 +4129,17 @@ function renderPaperTab(body, lesson) {
     return `<details class="paper-block">
       <summary>${escapeHtml(paperLabel(q.n))} <span class="sub">答案与解题思路</span></summary>
       <div class="paper-answer">
-        <div><b>答案：</b>${correct ? escapeHtml(correct) : "<span class=\"sub\">（未生成）</span>"}</div>
-        ${q.solution ? `<div style="margin-top:8px"><b>解题思路：</b><div class="paper-body">${md(q.solution)}</div></div>` : `<div class="sub" style="margin-top:8px">这道题还没有解题思路，点工具条里的「🧪 试卷解析」可以重新生成。</div>`}
-        ${q.givenAnswer ? `<div class="sub" style="margin-top:8px">试卷原文给出的答案：${escapeHtml(q.givenAnswer)}</div>` : ""}
+        <div class="paper-label">答案</div>
+        <div class="paper-answer-body">${correct ? md(paperAnswerText(correct)) : "<span class=\"sub\">（未生成）</span>"}</div>
+        ${q.solution ? `<div class="paper-label" style="margin-top:18px">解题思路</div><div class="paper-body">${md(paperAnswerText(q.solution))}</div>` : `<div class="sub" style="margin-top:14px">这道题还没有解题思路，点工具条里的「🧪 试卷解析」可以重新生成。</div>`}
+        ${q.givenAnswer ? `<div class="paper-note">试卷原文给出的答案：${escapeHtml(q.givenAnswer)}</div>` : ""}
       </div>
     </details>`;
   }).join("");
 
   body.innerHTML = `
-    <div class="card" style="margin-bottom:16px">
+    <div class="paper-sheet">
+    <div class="card" style="margin-bottom:18px">
       <div style="font-weight:700;font-size:16px">📝 ${escapeHtml(lesson.title || "试卷")}</div>
       <div class="sub" style="margin-top:6px">${qs.length} 道题 · ${points.length} 个考点 · 建议顺序：<b>先看考点</b> → <b>再做题目</b> → <b>最后对答案</b></div>
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
@@ -4137,8 +4151,9 @@ function renderPaperTab(body, lesson) {
     ${sec1}
     <h3 style="margin:22px 0 8px">二、题目（复习完再做）</h3>
     ${sec2}
-    <h3 style="margin:22px 0 8px">三、答案与解题思路</h3>
-    ${sec3}`;
+    <h3 style="margin:26px 0 10px">三、答案与解题思路</h3>
+    ${sec3}
+    </div>`;
 
   const go = body.querySelector("#paper-go");
   if (go) go.addEventListener("click", () => {

@@ -804,16 +804,34 @@ body.pet-hidden #pet-show { display: inline-flex; }
  * answers), so it needs its own quiet styling rather than the card grid the other tabs
  * use. Answer options stay full-width buttons because the sheet is often read on a
  * phone, and marking one must be a comfortable tap. */
-.paper-block { border: 1px solid var(--border); border-radius: 12px; margin: 0 0 10px; padding: 4px 14px 10px; background: var(--surface); }
-.paper-block > summary { cursor: pointer; padding: 8px 0; font-weight: 700; list-style: none; }
+/* ---------- Exam paper sheet ----------
+ * Read as prose for a long time, so it gets a comfortable measure and real spacing: the
+ * answer sits in its own tinted block, the solution keeps paragraph indentation and
+ * display maths gets its own line, and the whole sheet stays inside a column instead of
+ * running the full width of a desktop window. */
+.paper-sheet { max-width: 960px; }
+.paper-block { border: 1px solid var(--border); border-radius: 14px; margin: 0 0 14px; padding: 6px 20px 16px; background: var(--surface); }
+.paper-block > summary { cursor: pointer; padding: 12px 0; font-weight: 700; font-size: 15px; list-style: none; }
 .paper-block > summary::-webkit-details-marker { display: none; }
 .paper-block > summary::before { content: "▸ "; color: var(--brand); }
 .paper-block[open] > summary::before { content: "▾ "; }
-.paper-point { border-left: 3px solid var(--brand); padding: 2px 0 2px 12px; margin: 10px 0; }
-.paper-body { line-height: 1.75; margin-top: 4px; }
-.paper-answer { border-top: 1px dashed var(--border); padding-top: 8px; }
-.paper-opt { border-radius: 10px; }
+.paper-point { border-left: 3px solid var(--brand); padding: 4px 0 6px 14px; margin: 16px 0; }
+.paper-body { line-height: 2.0; margin-top: 6px; }
+.paper-body > p { margin: 0 0 13px; }
+.paper-body > p:last-child { margin-bottom: 0; }
+.paper-body ul, .paper-body ol { margin: 8px 0 14px; padding-left: 26px; }
+.paper-body li { margin: 7px 0; line-height: 2.0; }
+.paper-body .katex-display { margin: 14px 0; padding: 4px 0; overflow-x: auto; overflow-y: hidden; }
+.paper-label { font-weight: 700; color: var(--brand); font-size: 14px; margin: 0 0 7px; }
+.paper-answer { border-top: 1px dashed var(--border); padding-top: 16px; }
+.paper-answer-body { background: rgba(127, 127, 127, .07); border-radius: 10px; padding: 13px 15px; }
+.paper-answer-body > p { margin: 0 0 10px; }
+.paper-note { margin-top: 16px; padding: 9px 13px; border-radius: 9px; background: rgba(127, 127, 127, .06); font-size: 13px; color: var(--text-2); line-height: 1.85; }
+.paper-question { padding: 16px 20px; }
+.paper-question .paper-body { line-height: 1.95; }
+.paper-options { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
+.paper-opt { display: block; width: 100%; text-align: left; border-radius: 10px; padding: 10px 14px; line-height: 1.75; }
 .paper-opt-right { border-color: #16a34a !important; color: #15803d !important; }
 .paper-opt-wrong { border-color: #dc2626 !important; color: #b91c1c !important; }
-.paper-question .paper-verdict { min-height: 18px; }
-.paper-quote { margin: 4px 0 2px; padding: 5px 10px; border-left: 3px solid var(--accent, #f59e0b); background: rgba(245, 158, 11, .07); border-radius: 0 8px 8px 0; font-size: 13.5px; }
+.paper-question .paper-verdict { min-height: 18px; line-height: 1.8; }
+.paper-quote { margin: 7px 0 5px; padding: 8px 13px; border-left: 3px solid var(--accent, #f59e0b); background: rgba(245, 158, 11, .08); border-radius: 0 8px 8px 0; font-size: 13.5px; line-height: 1.85; }

@@ -2487,23 +2487,20 @@ function computeMasteryMap(lessons, cards, quizzes) {
     const mature = lc.filter((c) => c.interval >= 21).length;
     const q = quizByLesson[l.id];
     const pm = pointMastery(l.points);
-    const cardPct = lc.length ? (mature / lc.length) * 100 : null;
     // The list endpoint sends a slim quiz (score + questionCount) because the whole
     // question bank is megabytes per lesson and this only needs the count. A quiz
     // fetched per lesson still carries its real `questions` array.
     const qTotal = q ? (q.questionCount ?? q.questions?.length ?? 0) : 0;
     const quizPct = qTotal ? ((q.score ?? 0) / qTotal) * 100 : null;
-    // The scale is the FULL rubric, not just the parts that happen to exist. Dividing by the
-    // weights of the existing parts rescaled whatever was left: a lesson with nothing but a
-    // quiz was scored purely on that quiz, so acing one quiz read as 100% mastery while 70%
-    // of the rubric had never been attempted. A component with no evidence contributes zero
-    // instead of vanishing from the denominator.
-    const pSum = 30 * pm.pointPct + 40 * (lc.length ? cardPct : 0) + 30 * (quizPct || 0);
+    // Mastery is simply the best quiz score: answering every question correctly on one
+    // attempt is 100%. A lesson with no quiz bank has no mastery yet (0%), and the
+    // Feynman self-ratings and card maturity no longer move the number at all — they are
+    // still returned below so the per-lesson rows can show them for reference.
     map[l.id] = {
       totalCards: lc.length, seen, mature, quiz: q,
       pointPct: pm.pointPct, reviewedPoints: pm.reviewed, totalPoints: pm.total,
       hasPoints: (l.points || []).length > 0, hasCards: lc.length > 0, hasQuiz: quizPct != null,
-      pct: Math.round(pSum / 100),
+      pct: quizPct == null ? 0 : Math.round(quizPct),
     };
   });
   return map;
@@ -8152,7 +8149,7 @@ async function finishFeynman() {
       <div class="empty-ico" style="font-size:44px">🎓</div>
       <h2>自测完成</h2>
       <p class="sub">${done} points reviewed — Excellent ${counts[3]} · Good ${counts[2]} · Vague ${counts[1]} · Couldn't ${counts[0]}</p>
-      <p class="sub">These ratings now count toward your lesson mastery (30%).</p>
+      <p class="sub">These ratings stay on the lesson for reference — lesson mastery now tracks your best quiz score only.</p>
       <button class="btn btn-primary" id="feynman-done">回到课程</button>
     </div>`;
   $("#feynman-done").addEventListener("click", () => openLesson(lessonId, "points"));
@@ -8961,7 +8958,7 @@ async function renderProgress() {
       <div class="card">
         <h3>掌握度概览</h3>
         <div class="stat" style="margin-bottom:14px"><div class="stat-num">${matureCards}<span class="sub" style="font-size:16px"> / ${cards.length}</span></div><div class="stat-label">已掌握卡片（间隔 ≥ 21 天）</div></div>
-        <div class="stat" style="margin-bottom:14px"><div class="stat-num">${masteredLessons}<span class="sub" style="font-size:16px"> / ${lessons.length}</span></div><div class="stat-label">掌握度 ≥ 80% 的课程</div></div>
+        <div class="stat" style="margin-bottom:14px"><div class="stat-num">${masteredLessons}<span class="sub" style="font-size:16px"> / ${lessons.length}</span></div><div class="stat-label">测验正确率 ≥ 80% 的课程</div></div>
         <div class="stat"><div class="stat-num">${quizzes.length}</div><div class="stat-label">测验次数</div></div>
       </div>
     </div>
@@ -8970,7 +8967,7 @@ async function renderProgress() {
 
     <div class="card">
       <h3>各课掌握度</h3>
-      <div class="sub" style="margin-bottom:6px">点课程即可打开。掌握度 = 30% 知识点自测 + 40% 成熟卡片 + 30% 最好一次测验成绩；某一项还没做过（未生成卡片、没做自测、没做题）时该项按 0 计，所以只做题最多只能拿到 30%。</div>
+      <div class="sub" style="margin-bottom:6px">点课程即可打开。掌握度 = 最好一次测验的正确率：做对全部题目就是 100%，还没做题是 0%。（知识点自测、卡片成熟度仍会显示在每行下面供参考）</div>
       ${lp.length ? lp.sort((a, b) => b.lesson.createdAt - a.lesson.createdAt).map(lpRow).join("") : '<div class="sub">还没有课程。</div>'}
     </div>`;
 

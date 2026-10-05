@@ -3911,11 +3911,11 @@ function buildExportContainer(lesson, quiz) {
       <div style="border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;margin:0 0 10px;background:#fff;page-break-inside:avoid;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
           <span style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;text-transform:uppercase;background:${impBg};color:${impColor};">${imp}</span>
-          <span style="font-size:15px;font-weight:700;color:#0f172a;">${escapeHtml(p.title || "Point")}</span>
-          ${(p.tags || []).slice(0,2).map(t => `<span style="font-size:11px;background:#f8fafc;border:1px solid #e2e8f0;color:#475569;padding:2px 8px;border-radius:20px;">${escapeHtml(t)}</span>`).join("")}
+          <span style="font-size:15px;font-weight:700;color:#0f172a;">${mdInline(p.title || "Point")}</span>
+          ${(p.tags || []).slice(0,2).map(t => `<span style="font-size:11px;background:#f8fafc;border:1px solid #e2e8f0;color:#475569;padding:2px 8px;border-radius:20px;">${mdInline(t)}</span>`).join("")}
         </div>
         <div style="font-size:12px;line-height:1.6;color:#475569;margin-top:6px;">
-          ${bullets.map(b => `<div style="margin:0 0 2px;">• ${escapeHtml(b)}</div>`).join("")}
+          ${bullets.map(b => `<div style="margin:0 0 2px;">• ${mdInline(b)}</div>`).join("")}
         </div>
         ${p.mnemonic ? `<div style="margin-top:8px;background:#fef3c7;border-left:3px solid #d97706;padding:8px 10px;border-radius:8px;font-size:12px;color:#475569;"><b style="color:#d97706;">🧠 Mnemonic:</b> ${mdInline(p.mnemonic)}</div>` : ""}
       </div>`;
@@ -3956,7 +3956,7 @@ function buildExportContainer(lesson, quiz) {
 
   c.innerHTML = `
     <div style="border-bottom:3px solid #0d9488;padding-bottom:12px;margin-bottom:16px;">
-      <div style="font-size:22px;font-weight:800;color:#0f766e;">${escapeHtml(lesson.title || "Lesson")}</div>
+      <div style="font-size:22px;font-weight:800;color:#0f766e;">${mdInline(lesson.title || "Lesson")}</div>
       <div style="font-size:12px;color:#94a3b8;margin-top:4px;">${lesson.kind ? lesson.kind.toUpperCase() : ""} · ${lesson.points?.length || 0} points · ${questions.length} questions</div>
     </div>
     <h2 style="font-size:17px;font-weight:800;color:#0d9488;margin:0 0 10px;">📌 Key Points</h2>
@@ -4314,11 +4314,11 @@ function renderPaperTab(body, lesson) {
       ${list.length ? list.map((entry, i) => {
         const p = entry.point, link = entry.link || {};
         return `<div class="paper-point">
-          <div style="font-weight:700">${i + 1}. ${escapeHtml(p.title)}</div>
-          ${link.quote ? `<div class="paper-quote">题目依据：「${escapeHtml(link.quote)}」</div>` : ""}
-          ${link.why ? `<div class="sub" style="margin-top:2px">↳ ${escapeHtml(link.why)}</div>` : ""}
+          <div style="font-weight:700">${i + 1}. ${mdInline(p.title)}</div>
+          ${link.quote ? `<div class="paper-quote">题目依据：「${mdInline(link.quote)}」</div>` : ""}
+          ${link.why ? `<div class="sub" style="margin-top:2px">↳ ${mdInline(link.why)}</div>` : ""}
           <div class="paper-body">${md(explanationText(p.explanation))}</div>
-          ${(p.keyTerms || []).length ? `<div class="sub" style="margin-top:6px;font-size:12.5px">关键词：${p.keyTerms.map((k) => escapeHtml(String(k))).join(" · ")}</div>` : ""}
+          ${(p.keyTerms || []).length ? `<div class="sub" style="margin-top:6px;font-size:12.5px">关键词：${p.keyTerms.map((k) => mdInline(String(k))).join(" · ")}</div>` : ""}
         </div>`;
       }).join("") : `<div class="sub">（这一题没有单独的知识点）</div>`}
     </details>`;
@@ -4344,7 +4344,7 @@ function renderPaperTab(body, lesson) {
         <div class="paper-label">答案</div>
         <div class="paper-answer-body">${correct ? md(paperAnswerText(correct)) : "<span class=\"sub\">（未生成）</span>"}</div>
         ${q.solution ? `<div class="paper-label" style="margin-top:18px">解题思路</div><div class="paper-body">${optionNotesHtml(paperAnswerText(q.solution), correctLetterOf(q))}</div>` : `<div class="sub" style="margin-top:14px">这道题还没有解题思路，点工具条里的「🧪 试卷解析」可以重新生成。</div>`}
-        ${q.givenAnswer ? `<div class="paper-note">试卷原文给出的答案：${escapeHtml(q.givenAnswer)}</div>` : ""}
+        ${q.givenAnswer ? `<div class="paper-note">试卷原文给出的答案：${mdInline(q.givenAnswer)}</div>` : ""}
       </div>
     </details>`;
   }).join("");
@@ -5120,7 +5120,7 @@ function applyPointLanguage(lesson, idx) {
     const supp = showEn ? (point.en.supplement || "") : (point.supplement || "");
     // Chinese gets term highlighting; the English text has no Chinese terms to mark.
     body.innerHTML = (showEn ? mdFull(text) : mdFull(highlightTerms(text, terms)))
-      + (supp ? `<div class="kp-supplement"><b>💡 理解:</b> ${escapeHtml(supp)}</div>` : "");
+      + (supp ? `<div class="kp-supplement"><b>💡 理解:</b> ${mdInline(supp)}</div>` : "");
   }
 
   const enBtn = card.querySelector(".en-btn");
@@ -5245,7 +5245,7 @@ function pointSection(p, lesson, shownSlides) {
       <div class="kp-subhead">
         <span class="imp imp-${imp}">${imp}</span>
         <span class="kp-subtitle">${mdInline(dispTitle)}</span>
-        ${tags.map((t) => `<span class="pill pill-gray">${escapeHtml(t)}</span>`).join("")}
+        ${tags.map((t) => `<span class="pill pill-gray">${mdInline(t)}</span>`).join("")}
         ${(p.weakTerms || []).length ? `<span class="pill pill-amber" title="回忆时没记住的术语">⚠ 弱项 ${p.weakTerms.length}</span>` : ""}
         ${p.feynmanStage != null ? `<span class="pill ${feynmanPct(p.feynmanStage) >= 67 ? "pill-brand" : feynmanPct(p.feynmanStage) >= 33 ? "pill-amber" : "pill-gray"}" title="Feynman 自测 · 已复习 ${p.feynmanCount || 0} 次 · 上次 ${p.feynmanLast ? fmtDate(p.feynmanLast) : ""}">✓ 已复习 ${feynmanPct(p.feynmanStage)}%</span>` : `<span class="pill pill-gray" title="还没做过 Feynman 自测">○ 未复习</span>`}
         <span style="margin-left:auto;display:flex;gap:6px;align-items:center">
@@ -5255,12 +5255,12 @@ function pointSection(p, lesson, shownSlides) {
           ${terms.length ? `<button class="btn btn-sm btn-ghost recall-btn" data-state="idle" title="逐个回想术语：空格揭示 → 自评记住/没记住">🔎 回忆</button>` : ""}
         </span>
       </div>
-      <div class="kp-body">${showEn ? mdFull(dispBody) : mdFull(highlightTerms(dispBody, terms))}${dispSupp ? `<div class="kp-supplement"><b>💡 理解:</b> ${escapeHtml(dispSupp)}</div>` : ""}</div>
+      <div class="kp-body">${showEn ? mdFull(dispBody) : mdFull(highlightTerms(dispBody, terms))}${dispSupp ? `<div class="kp-supplement"><b>💡 理解:</b> ${mdInline(dispSupp)}</div>` : ""}</div>
       ${p.mnemonic ? `<div class="kp-mnemonic"><b>🧠 Mnemonic:</b> ${md(p.mnemonic)}</div>` : ""}
       ${figs.length ? `<div class="kp-figs">${figs.map((im) => `
         <figure class="kp-fig" data-slide="${slide.index}" data-crop="${(slide.figureCrop || []).join(",")}" data-full="${im.dataUrl}">
           <div class="kp-fig-wrap"><img src="${im.dataUrl}" alt="">${slide.figureCrop ? `<span class="kp-crop-badge">✂ 已选区域</span>` : ""}</div>
-          <figcaption>${escapeHtml(im.caption?.caption || im.caption?.takeaway || `Slide ${slide.index}`)} <button class="btn btn-sm btn-ghost kp-crop-btn" title="选择/调整配图显示区域">✂ 选区域</button></figcaption>
+          <figcaption>${mdInline(im.caption?.caption || im.caption?.takeaway || `Slide ${slide.index}`)} <button class="btn btn-sm btn-ghost kp-crop-btn" title="选择/调整配图显示区域">✂ 选区域</button></figcaption>
         </figure>`).join("")}</div>` : ""}
       ${figNote}
       ${manualFiguresHtml(manualFigs, idx)}
@@ -6044,7 +6044,7 @@ function renderSlidesTab(body, lesson) {
         ${s.images?.filter((im) => im.kind !== "figure").length ? `<div class="slide-images">${s.images.filter((im) => im.kind !== "figure").map((im) => `
           <figure style="margin:0;max-width:220px">
             <img src="${im.dataUrl}" style="max-height:140px;width:100%;object-fit:contain;border:1px solid var(--border);border-radius:8px">
-            ${im.caption ? `<figcaption class="sub" style="font-size:12px;margin-top:4px">${escapeHtml(im.caption.caption || im.caption.takeaway || "")}</figcaption>` : ""}
+            ${im.caption ? `<figcaption class="sub" style="font-size:12px;margin-top:4px">${mdInline(im.caption.caption || im.caption.takeaway || "")}</figcaption>` : ""}
           </figure>`).join("")}</div>` : ""}
         ${s.notes ? `<div class="slide-notes">🎤 ${escapeHtml(s.notes)}</div>` : ""}
       </div>`).join("");
@@ -6175,8 +6175,8 @@ function renderFiguresTab(body, lesson) {
         <div style="margin-top:10px">
           <div class="sub" style="margin-bottom:4px">Slide ${f.slide}${f.im.caption?.type ? ` · <span class="pill pill-gray">${escapeHtml(f.im.caption.type)}</span>` : ""}</div>
           ${f.im.caption ? `
-            <div style="font-weight:600">${escapeHtml(f.im.caption.caption || "")}</div>
-            <div class="sub" style="margin-top:4px">${escapeHtml(f.im.caption.takeaway || "")}</div>` : `<div class="sub">Not captioned yet.</div>`}
+            <div style="font-weight:600">${mdInline(f.im.caption.caption || "")}</div>
+            <div class="sub" style="margin-top:4px">${mdInline(f.im.caption.takeaway || "")}</div>` : `<div class="sub">Not captioned yet.</div>`}
         </div>
       </div>`).join("")}</div>`;
   $("#btn-caption").addEventListener("click", () => captionFigures(currentLessonId));
@@ -8024,7 +8024,7 @@ function showFeynmanCard() {
     if (sl) figs = (sl.images || []).filter((im) => im.kind !== "page" && im.kind !== "logo").slice(0, 3);
   }
   let figsHtml = figs.length ? `<div class="kp-figs" style="margin-top:12px">${figs.map((im) => `
-      <figure class="kp-fig"><img src="${im.dataUrl}" alt=""><figcaption>${escapeHtml(im.caption?.caption || im.caption?.takeaway || `Slide ${p.slide}`)}</figcaption></figure>`).join("")}</div>` : "";
+      <figure class="kp-fig"><img src="${im.dataUrl}" alt=""><figcaption>${mdInline(im.caption?.caption || im.caption?.takeaway || `Slide ${p.slide}`)}</figcaption></figure>`).join("")}</div>` : "";
   // Region crop: reuse the interactive crop picker so the user can select a
   // sub-region of this point's slide and keep it as the Feynman figure.
   let cropBtn = "", cropFig = "";
@@ -8051,7 +8051,7 @@ function showFeynmanCard() {
       <div class="card" style="margin-bottom:14px">
         <div style="margin-bottom:6px">
           <span class="imp imp-${p.importance === "high" ? "high" : p.importance === "low" ? "low" : "medium"}">${p.importance || "medium"}</span>
-          ${(p.tags || []).map((t) => `<span class="pill pill-gray">${escapeHtml(t)}</span>`).join("")}
+          ${(p.tags || []).map((t) => `<span class="pill pill-gray">${mdInline(t)}</span>`).join("")}
         </div>
         <div style="font-size:18px;font-weight:700">${mdInline(p.title)}</div>
         <div class="sub" style="margin-top:10px">🤔 Explain this in your own words (out loud or in your head) as if teaching a classmate. Then reveal the answer.</div>
@@ -8549,8 +8549,8 @@ function showReviewCard() {
         </div>
         <button class="btn btn-primary btn-lg" id="r-reveal" style="width:100%">显示答案 <span style="opacity:.6;font-weight:400">(空格 / ↑↓)</span></button>
         <div id="r-grades" hidden style="margin-top:16px">
-          ${userText != null ? `<div class="q-expl wrong" style="margin-bottom:8px"><b>✗ 你的答案:</b> ${escapeHtml(userText)}</div>` : ""}
-          <div class="q-expl correct" style="margin-bottom:8px"><b class="ok-text">✓ 正确答案:</b> <span class="ok-text">${escapeHtml(correctText)}</span></div>
+          ${userText != null ? `<div class="q-expl wrong" style="margin-bottom:8px"><b>✗ 你的答案:</b> ${mdInline(userText)}</div>` : ""}
+          <div class="q-expl correct" style="margin-bottom:8px"><b class="ok-text">✓ 正确答案:</b> <span class="ok-text">${mdInline(correctText)}</span></div>
           ${m.explanation ? `<div class="q-expl">${optionNotesHtml(m.explanation, correctLetterOf(m))}</div>` : ""}
           <div class="review-grade" style="margin-top:16px">
             <button class="grade-btn grade-0" data-ok="0"><span>还是不会</span><span class="g-key">1</span></button>
@@ -8573,7 +8573,7 @@ function showReviewCard() {
       <div class="card" style="margin-bottom:14px">
         <div style="margin-bottom:6px">
           <span class="imp imp-${imp}">${imp}</span>
-          ${(point.tags || []).map((t) => `<span class="pill pill-gray">${escapeHtml(t)}</span>`).join("")}
+          ${(point.tags || []).map((t) => `<span class="pill pill-gray">${mdInline(t)}</span>`).join("")}
           <span class="pill pill-gray">📚 ${escapeHtml(lesson.title)}</span>
         </div>
         <div style="font-size:18px;font-weight:700">${mdInline(point.title)}</div>
@@ -9077,7 +9077,7 @@ function searchResultRow(it) {
     <div class="search-row" data-lesson="${it.lessonId}" data-tab="${meta.tab}"${pt}>
       <div class="search-ico">${meta.ico}</div>
       <div style="flex:1;min-width:0">
-        <div style="font-weight:600">${escapeHtml(it.title)}</div>
+        <div style="font-weight:600">${mdInline(it.title)}</div>
         <div class="sub" style="font-size:12.5px">${meta.label} · ${escapeHtml(it.lessonTitle)}</div>
       </div>
       ${imp}

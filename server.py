@@ -24,7 +24,7 @@ import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote, quote
 
 import exporters
 import pdf_parser
@@ -1332,6 +1332,22 @@ def _export_filename(lesson, ext):
     return "%s.%s" % (title[:60], ext)
 
 
+def _content_disposition(disposition, filename):
+    """Build a latin-1-safe Content-Disposition for a possibly non-ASCII name.
+
+    HTTP header values are encoded as latin-1, so a Chinese lesson title passed
+    straight into `filename="..."` raised UnicodeEncodeError inside
+    BaseHTTPRequestHandler.send_header — *after* the 200 status line was already
+    written, so the client saw a truncated response / connection reset (and
+    Caddy reported it as a 502). RFC 5987's filename* carries the real UTF-8
+    name; filename= is kept as an ASCII fallback for old clients.
+    """
+    stem, ext = os.path.splitext(filename)
+    ascii_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem.encode("ascii", "ignore").decode("ascii")).strip("._-")
+    ascii_name = (ascii_stem or "lesson") + ext
+    return '%s; filename="%s"; filename*=UTF-8\'\'%s' % (disposition, ascii_name, quote(filename, safe=""))
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "MBBSRevision/1.1"
 
@@ -1705,7 +1721,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             cards, quiz = _export_lesson_data(lesson)
             if export_type == "pdf":
-                data = exporters.build_pdf(lesson, quiz)
+                try:
+                    data = exporters.build_pdf(lesson, quiz)
+                except Exception as exc:
+                    # Answer with a diagnosable error instead of dying mid-response
+                    # (an unhandled exception here closes the socket and the proxy
+                    # turns it into an opaque 502).
+                    self._send_json({"error": "PDF generation failed: %s" % exc}, 500)
+                    return
                 ctype = exporters.PDFMIME
                 ext = "pdf"
                 disposition = "inline"
@@ -1729,7 +1752,7 @@ class Handler(BaseHTTPRequestHandler):
             filename = _export_filename(lesson, ext)
             self.send_response(200)
             self.send_header("Content-Type", ctype)
-            self.send_header("Content-Disposition", '%s; filename="%s"' % (disposition, filename))
+            self.send_header("Content-Disposition", _content_disposition(disposition, filename))
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(data)))

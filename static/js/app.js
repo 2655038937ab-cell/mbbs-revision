@@ -1178,6 +1178,33 @@ function initPet() {
   };
   window.addEventListener("resize", clampPetToViewport);
   clampPetToViewport();
+
+  // ---- artwork -------------------------------------------------------------
+  // One image is requested at a time, so the set is cheap: the browser fetches the single
+  // src that is set (2-11KB), not all nine. Double-click cycles, and the pick is kept.
+  const PET_ART = ["pet-1","pet-2","pet-3","pet-4","pet-5","pet-6","pet-7","pet-8","pet-9"]
+    .map((n) => `img/pets/${n}.webp`);
+  const petImg = pet.querySelector("img");
+  const applyPetArt = (index) => {
+    if (!petImg || !PET_ART.length) return 0;
+    let i = index;
+    if (i == null) {
+      const saved = parseInt(localStorage.getItem("mbbs_pet_art") || "", 10);
+      i = Number.isFinite(saved) && saved >= 0 ? saved : Math.floor(Math.random() * PET_ART.length);
+    }
+    i = ((i % PET_ART.length) + PET_ART.length) % PET_ART.length;
+    petImg.src = PET_ART[i];
+    try { localStorage.setItem("mbbs_pet_art", String(i)); } catch { /* ignore */ }
+    return i;
+  };
+  petImg.addEventListener("error", () => { petImg.src = "img/pet.png"; });   // old drawing as a fallback
+  applyPetArt();
+  pet.addEventListener("dblclick", (e) => {
+    e.preventDefault();
+    const i = applyPetArt((parseInt(petImg.dataset.art || "0", 10) + 1) || 0);
+    if (typeof toast === "function") toast(`换个形象 ✓（第 ${i + 1} / ${PET_ART.length} 个，双击可继续换）`, "success");
+  });
+  petImg.dataset.art = String(parseInt(localStorage.getItem("mbbs_pet_art") || "0", 10) || 0);
 }
 async function saveGoalMinutes(m) {
   const n = parseInt(m, 10);

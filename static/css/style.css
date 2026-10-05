@@ -514,7 +514,7 @@ body.immersive .kp-group > summary.tree-l1 { font-size: 22px; }
   position: fixed;
   bottom: 16px;
   right: 16px;
-  width: 96px;
+  width: 132px;   /* 统一画布 213×163，角色占约 73% → 与基准形象同尺寸 */
   z-index: 60;
   cursor: grab;
   user-select: none;

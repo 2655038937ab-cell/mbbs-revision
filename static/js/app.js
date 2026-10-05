@@ -1182,7 +1182,7 @@ function initPet() {
   // ---- artwork -------------------------------------------------------------
   // One image is requested at a time, so the set is cheap: the browser fetches the single
   // src that is set (2-11KB), not all nine. Double-click cycles, and the pick is kept.
-  const PET_ART = ["pet-1","pet-2","pet-3","pet-4","pet-5","pet-6","pet-7","pet-8","pet-9"]
+  const PET_ART = ["pet-1","pet-2","pet-3","pet-4","pet-5","pet-6","pet-7","pet-8","pet-9","pet-10","pet-11","pet-12","pet-13","pet-14","pet-15"]
     .map((n) => `img/pets/${n}.webp`);
   const petImg = pet.querySelector("img");
   const applyPetArt = (index) => {

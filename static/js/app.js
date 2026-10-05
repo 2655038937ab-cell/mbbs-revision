@@ -1045,7 +1045,10 @@ function initPet() {
   refreshTodayBase();
   renderToday();
   setInterval(refreshTodayBase, 30000);
-  setInterval(renderToday, 1000); // refresh the seconds every second
+  // The focus reminder rides this tick instead of starting an interval of its own;
+  // petFocusTick is filled in further down, once the artwork helpers exist.
+  let petFocusTick = () => {};
+  setInterval(() => { renderToday(); petFocusTick(); }, 1000); // refresh the seconds every second
 
   function fmtPomo(ms) {
     const s = Math.max(0, Math.round(ms / 1000));
@@ -1207,6 +1210,96 @@ function initPet() {
     e.preventDefault();
     applyPetArt((parseInt(petImg.dataset.art || "0", 10) + 1) || 0);
   });
+
+  // ---- Focus reminder: the pet pops up every 15 minutes of study -----------
+  /* The pet was decoration; now every 15 accumulated minutes it interrupts on
+   * purpose: it un-collapses itself, plays the pop animation, swaps to the next
+   * artwork and says one line for five seconds, then collapses again.
+   *
+   * The count rides the ONE tick that is already refreshing the pet's clock (the
+   * 1-second interval wired above) and uses the same rule as the study clock — the
+   * tab has to be visible AND the user must have interacted within the idle limit
+   * — so a tab forgotten overnight never accumulates. A single tick can never add
+   * more than a few seconds, so a laptop that slept for an hour does not fire four
+   * reminders at once when it wakes. The total survives a reload in localStorage,
+   * keyed by day, and the trigger keeps the remainder so the next reminder is 15
+   * minutes of study later, not 15 minutes of wall clock.
+   */
+  const FOCUS_POP_SEC = 900;          // 15 minutes of counted study
+  const FOCUS_POP_SHOW_MS = 5000;     // how long the pet stays up with its line
+  const FOCUS_POP_KEY = "mbbs_pet_focus";
+  // The bubble has had styles since the early pet versions but no element; create
+  // it here rather than in index.html so the two can never drift apart.
+  let bubble = document.getElementById("pet-bubble");
+  if (!bubble) {
+    bubble = document.createElement("div");
+    bubble.id = "pet-bubble";
+    bubble.hidden = true;
+    pet.appendChild(bubble);
+  }
+  let focusPopTimer = 0;
+  // Same shape the app writes: {date, seconds, pops}; a record from another day
+  // starts over at zero.
+  const readFocus = () => {
+    const today = dayKey(new Date());
+    let rec = null;
+    try { rec = JSON.parse(localStorage.getItem(FOCUS_POP_KEY) || "null"); } catch { /* ignore */ }
+    if (!rec || rec.date !== today || typeof rec.seconds !== "number") {
+      rec = { date: today, seconds: 0, pops: 0 };
+    }
+    if (typeof rec.pops !== "number") rec.pops = 0;
+    return rec;
+  };
+  const writeFocus = (rec) => {
+    try { localStorage.setItem(FOCUS_POP_KEY, JSON.stringify(rec)); } catch { /* ignore */ }
+  };
+  const petFocusPop = (minutes) => {
+    // Remember whether the student had collapsed the pet themselves: after the
+    // reminder we collapse again, but their own "keep it visible" choice is not
+    // quietly rewritten just because the timer fired once.
+    const wasHidden = hidden;
+    hidden = false;
+    applyPetState();
+    // Restart the animation even when it is already on (remove -> reflow -> add).
+    pet.classList.remove("pop");
+    void pet.offsetWidth;
+    pet.classList.add("pop");
+    // Next artwork, exactly like a double-click — and no toast: the swap is the
+    // whole point of the reminder, a notification on top of it was just noise.
+    applyPetArt((parseInt(petImg.dataset.art || "0", 10) + 1) || 0);
+    bubble.textContent = `已经专注 ${minutes} 分钟啦，起来动一下 🐾`;
+    bubble.hidden = false;
+    clearTimeout(focusPopTimer);
+    focusPopTimer = setTimeout(() => {
+      pet.classList.remove("pop");
+      bubble.hidden = true;
+      bubble.textContent = "";
+      // Collapse again: the reminder interrupts, then gets out of the way. 🐾 or
+      // the Settings menu brings the pet back at any time, and the next 15
+      // minutes will still pop.
+      hidden = true;
+      applyPetState();
+      if (!wasHidden) { try { localStorage.removeItem("mbbs_pet_hidden"); } catch { /* ignore */ } }
+    }, FOCUS_POP_SHOW_MS);
+  };
+  petImg.addEventListener("animationend", () => pet.classList.remove("pop"));
+  let lastFocusTick = Date.now();
+  petFocusTick = () => {
+    const now = Date.now();
+    const delta = (now - lastFocusTick) / 1000;
+    lastFocusTick = now;
+    if (!(delta > 0) || delta > 5) return;                       // first tick / slept
+    if (document.visibilityState !== "visible") return;          // only while on screen
+    if ((now - lastInteraction) >= IDLE_LIMIT_MS) return;        // same idle rule as study time
+    const rec = readFocus();
+    rec.seconds += delta;
+    if (rec.seconds >= FOCUS_POP_SEC) {
+      rec.seconds -= FOCUS_POP_SEC;
+      rec.pops += 1;
+      petFocusPop(15 * rec.pops);
+    }
+    writeFocus(rec);
+  };
 }
 async function saveGoalMinutes(m) {
   const n = parseInt(m, 10);

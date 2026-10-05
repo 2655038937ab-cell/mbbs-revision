@@ -552,7 +552,8 @@ body.pet-hidden #pet { display: none; }
 }
 #pet-bubble {
   position: absolute;
-  bottom: calc(100% + 8px);
+  /* Clear of #pet-timer, which always sits at the top of the pet box. */
+  bottom: calc(100% + 64px);
   right: 0;
   width: max-content;
   max-width: 220px;
@@ -565,7 +566,10 @@ body.pet-hidden #pet { display: none; }
   color: var(--text);
   box-shadow: 0 4px 16px rgba(0,0,0,.15);
   margin-bottom: 6px;
+  pointer-events: none;   /* it is a message, not a control the page must dodge */
 }
+/* The element is created by initPet() (app.js) and toggled with [hidden]. */
+#pet-bubble[hidden] { display: none; }
 #pet-bubble:after {
   content: "";
   position: absolute;

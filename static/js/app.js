@@ -1115,29 +1115,54 @@ function initPet() {
   });
 
   // Drag the pet.
-  let dragging = false;
-  pet.addEventListener("pointerdown", (e) => {
-    dragging = false;
-    pet.setPointerCapture(e.pointerId);
-  });
-  pet.addEventListener("pointermove", (e) => {
-    if (!pet.hasPointerCapture(e.pointerId)) return;
-    dragging = true;
-    pet.classList.add("dragging");
+  //
+  // The offset between the pointer and the pet's corner is kept, so the pet stays exactly
+  // where you grabbed it. Computing the position from the cursor alone (left = clientX-w/2)
+  // centred the pet under the pointer and made it jump on the first move — a 6px move threw
+  // it 38px sideways, which reads as the pet fighting the mouse.
+  //
+  // The move/up listeners live on the window, in the capture phase, for as long as the drag
+  // lasts. Relying on pointer capture alone lost the drag as soon as the cursor outran the
+  // element: on a fast drag only the first move was applied and the pet stayed behind.
+  let dragDX = 0, dragDY = 0, dragging = false;
+  // No corner guard any more: the timer travels INSIDE the pet (see #pet-timer in the
+  // markup), so there is nothing left to overlap. Guarding the bottom 46px did not avoid a
+  // collision, it just refused to let the pet stay where it was put — dragging it from its
+  // default corner yanked it 30px upwards on the first move.
+  const pillGuard = 0;
+  const onPetDragMove = (e) => {
+    if (!dragging) return;
     const w = pet.offsetWidth, h = pet.offsetHeight;
-    let left = e.clientX - w / 2, top = e.clientY - h / 2;
-    // Keep the pet fully inside the viewport AND clear of the bottom-right corner
-    // where the focus pill lives, so the two never stack on top of each other.
-    const pillGuard = 46;
-    left = Math.max(0, Math.min(window.innerWidth - w, left));
-    top = Math.max(0, Math.min(window.innerHeight - h - pillGuard, top));
+    const left = Math.max(0, Math.min(window.innerWidth - w, e.clientX - dragDX));
+    const top = Math.max(0, Math.min(window.innerHeight - h - pillGuard, e.clientY - dragDY));
     pet.style.left = left + "px";
     pet.style.top = top + "px";
     pet.style.right = "auto";
     pet.style.bottom = "auto";
     try { localStorage.setItem("mbbs_pet_pos", JSON.stringify({ left, top })); } catch { /* ignore */ }
+  };
+  const endPetDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    pet.classList.remove("dragging");
+    window.removeEventListener("pointermove", onPetDragMove, true);
+    window.removeEventListener("pointerup", endPetDrag, true);
+    window.removeEventListener("pointercancel", endPetDrag, true);
+  };
+  pet.addEventListener("pointerdown", (e) => {
+    if (e.button != null && e.button !== 0) return;            // left button only
+    const t = e.target;
+    if (t && t.closest && t.closest("button, a, input, select")) return;  // not the timer controls
+    const r = pet.getBoundingClientRect();
+    dragDX = e.clientX - r.left;
+    dragDY = e.clientY - r.top;
+    dragging = true;
+    pet.classList.add("dragging");
+    window.addEventListener("pointermove", onPetDragMove, true);
+    window.addEventListener("pointerup", endPetDrag, true);
+    window.addEventListener("pointercancel", endPetDrag, true);
+    e.preventDefault();
   });
-  pet.addEventListener("pointerup", () => { pet.classList.remove("dragging"); });
 
   // A saved position from a larger window (or a bigger monitor) can leave the pet
   // hanging off-screen after a resize, which is the worst version of "it covers my
@@ -1146,7 +1171,7 @@ function initPet() {
     if (!pet.style.left) return;                 // still using the default corner
     const w = pet.offsetWidth, h = pet.offsetHeight;
     const left = Math.max(0, Math.min(window.innerWidth - w, parseFloat(pet.style.left) || 0));
-    const top = Math.max(0, Math.min(window.innerHeight - h - 46, parseFloat(pet.style.top) || 0));
+    const top = Math.max(0, Math.min(window.innerHeight - h, parseFloat(pet.style.top) || 0));
     pet.style.left = left + "px";
     pet.style.top = top + "px";
     try { localStorage.setItem("mbbs_pet_pos", JSON.stringify({ left, top })); } catch { /* ignore */ }

@@ -2466,14 +2466,17 @@ function computeMasteryMap(lessons, cards, quizzes) {
     // fetched per lesson still carries its real `questions` array.
     const qTotal = q ? (q.questionCount ?? q.questions?.length ?? 0) : 0;
     const quizPct = qTotal ? ((q.score ?? 0) / qTotal) * 100 : null;
-    let wSum = 0, pSum = 0;
-    if ((l.points || []).length) { wSum += 30; pSum += 30 * pm.pointPct; }
-    if (lc.length) { wSum += 40; pSum += 40 * cardPct; }
-    if (quizPct != null) { wSum += 30; pSum += 30 * quizPct; }
+    // The scale is the FULL rubric, not just the parts that happen to exist. Dividing by the
+    // weights of the existing parts rescaled whatever was left: a lesson with nothing but a
+    // quiz was scored purely on that quiz, so acing one quiz read as 100% mastery while 70%
+    // of the rubric had never been attempted. A component with no evidence contributes zero
+    // instead of vanishing from the denominator.
+    const pSum = 30 * pm.pointPct + 40 * (lc.length ? cardPct : 0) + 30 * (quizPct || 0);
     map[l.id] = {
       totalCards: lc.length, seen, mature, quiz: q,
       pointPct: pm.pointPct, reviewedPoints: pm.reviewed, totalPoints: pm.total,
-      pct: wSum ? Math.round(pSum / wSum) : 0,
+      hasPoints: (l.points || []).length > 0, hasCards: lc.length > 0, hasQuiz: quizPct != null,
+      pct: Math.round(pSum / 100),
     };
   });
   return map;
@@ -8940,7 +8943,7 @@ async function renderProgress() {
 
     <div class="card">
       <h3>各课掌握度</h3>
-      <div class="sub" style="margin-bottom:6px">点课程即可打开。掌握度 = 30% 知识点自测 + 40% 成熟卡片 + 30% 最好一次测验成绩。</div>
+      <div class="sub" style="margin-bottom:6px">点课程即可打开。掌握度 = 30% 知识点自测 + 40% 成熟卡片 + 30% 最好一次测验成绩；某一项还没做过（未生成卡片、没做自测、没做题）时该项按 0 计，所以只做题最多只能拿到 30%。</div>
       ${lp.length ? lp.sort((a, b) => b.lesson.createdAt - a.lesson.createdAt).map(lpRow).join("") : '<div class="sub">还没有课程。</div>'}
     </div>`;
 

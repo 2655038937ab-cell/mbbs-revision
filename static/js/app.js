@@ -1194,6 +1194,10 @@ function initPet() {
     }
     i = ((i % PET_ART.length) + PET_ART.length) % PET_ART.length;
     petImg.src = PET_ART[i];
+    // Remember which art is on screen. The double-click handler reads this back, so it has
+    // to be updated on EVERY swap — writing it once at init left it pinned at 0 and every
+    // later double-click recomputed 0 + 1, so the pet never advanced past the second image.
+    petImg.dataset.art = String(i);
     try { localStorage.setItem("mbbs_pet_art", String(i)); } catch { /* ignore */ }
     return i;
   };
@@ -1201,10 +1205,8 @@ function initPet() {
   applyPetArt();
   pet.addEventListener("dblclick", (e) => {
     e.preventDefault();
-    const i = applyPetArt((parseInt(petImg.dataset.art || "0", 10) + 1) || 0);
-    if (typeof toast === "function") toast(`换个形象 ✓（第 ${i + 1} / ${PET_ART.length} 个，双击可继续换）`, "success");
+    applyPetArt((parseInt(petImg.dataset.art || "0", 10) + 1) || 0);
   });
-  petImg.dataset.art = String(parseInt(localStorage.getItem("mbbs_pet_art") || "0", 10) || 0);
 }
 async function saveGoalMinutes(m) {
   const n = parseInt(m, 10);

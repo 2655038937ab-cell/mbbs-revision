@@ -747,6 +747,60 @@ function setActivity(a) {
   if (a) lastInteraction = Date.now();
 }
 
+/* ---------------- Per-lesson study time ----------------
+ * "How long have I actually spent on this lesson?" The activity timer knows when real study
+ * is happening (visible, not idle) and totals it per day; it just never said which lesson.
+ * Seconds are attributed to the lesson being studied and kept in their own small store, so
+ * the lesson list can show it next to each course.
+ *
+ * setStudyTarget() flushes first, because the seconds accrued since the last flush belong to
+ * the lesson being LEFT, not the one being opened — changing the target any other way would
+ * quietly credit the wrong course. */
+let timeTarget = null;
+const lessonSeconds = new Map();
+let lessonSecondsLoaded = false;
+
+async function loadLessonSeconds(force) {
+  if (lessonSecondsLoaded && !force) return lessonSeconds;
+  try {
+    const rows = await db.getAll("lessonTime");
+    lessonSeconds.clear();
+    (rows || []).forEach((r) => { if (r && r.id) lessonSeconds.set(r.id, Number(r.total) || 0); });
+    lessonSecondsLoaded = true;
+  } catch { /* an instance without any timing yet */ }
+  return lessonSeconds;
+}
+
+function lessonSecondsOf(lessonId) { return lessonSeconds.get(lessonId) || 0; }
+
+function addLessonSeconds(lessonId, sec) {
+  if (!lessonId || !(sec > 0)) return;
+  lessonSeconds.set(lessonId, (lessonSeconds.get(lessonId) || 0) + sec);
+  const date = dayKey(new Date());
+  db.get("lessonTime", lessonId).then((rec) => db.put("lessonTime", {
+    id: lessonId,
+    lessonId,
+    total: (rec?.total || 0) + sec,
+    byDay: { ...(rec?.byDay || {}), [date]: ((rec?.byDay || {})[date] || 0) + sec },
+    updatedAt: Date.now(),
+  })).catch(() => {});
+}
+
+function setStudyTarget(lessonId) {
+  const next = lessonId || null;
+  if (next === timeTarget) return;
+  flushActivity();
+  timeTarget = next;
+}
+
+/* The lesson a review entry belongs to. The queue mixes cards, points and mistakes from
+ * every subject, so the entry's own payload is the only reliable source. */
+function reviewEntryLessonId(e) {
+  if (!e) return null;
+  return e.lessonId || (e.card && e.card.lessonId) || (e.mistake && e.mistake.lessonId)
+    || (e.point && e.point.lessonId) || null;
+}
+
 function flushActivity() {
   if (currentActivity && activitySeconds > 1) {
     // A trial visitor has no account to log study time against, and the write was
@@ -755,6 +809,7 @@ function flushActivity() {
     const sec = Math.round(activitySeconds);
     activitySeconds = 0;
     const date = dayKey(new Date());
+    if (timeTarget) addLessonSeconds(timeTarget, sec);
     const id = date + ":" + currentActivity;
     db.get("studyLog", id)
       .then((rec) => db.put("studyLog", { id, date, activity: currentActivity, seconds: (rec?.seconds || 0) + sec }))
@@ -2626,6 +2681,7 @@ function navigate(view) {
   saveReadingPosition();
   if (quizPreview) { quizPreview = null; document.removeEventListener("keydown", quizPreviewKeydown); }
   if (quizReview) { quizReview = null; document.removeEventListener("keydown", quizReviewKeydown); }
+  setStudyTarget(null);            // leaving any lesson: flush before the view goes
   currentView = view;
   immersiveOn = false;
   document.body.classList.remove("immersive");
@@ -2948,6 +3004,7 @@ function lessonRow(l, cls, catOpts) {
         ${cardCount ? `<span class="pill pill-accent">${cardCount} cards</span>` : ""}
         ${showBar ? `<span class="pill pill-gray">${pct}%</span>` : ""}
         ${due ? `<span class="pill pill-amber">${due} due</span>` : ""}
+        ${lessonSecondsOf(l.id) >= 60 ? `<span class="pill pill-gray" title="在这门课上实际学习的时间（页面可见、有互动才计时）">⏱ ${fmtDuration(lessonSecondsOf(l.id))}</span>` : ""}
       </div>
     </div>`;
 }
@@ -2987,6 +3044,7 @@ async function renameLesson(lessonId) {
 
 /* ---------------- Lessons list ---------------- */
 async function renderLessons() {
+  await loadLessonSeconds();
   const [lessons, cards, quizzes, cls, folders] = await Promise.all([
     db.getAllLite("lessons"), db.getAllLite("cards"), db.getAll("quizzes"), api.getClassification().catch(() => ({ categories: [], manual: {} })), (db.getAll("folders").catch(() => []) || []),
   ]);
@@ -3522,6 +3580,8 @@ function readPosChip(lessonId, pointCount) {
 // tabs). Everything else — saving a note, flipping a point to English, rating a
 // recall — keeps the reader exactly where they were.
 async function renderLessonDetail(opts) {
+  // Opening a lesson starts its clock; navigating away (setStudyTarget(null)) stops it.
+  if (currentLessonId) setStudyTarget(currentLessonId);
   const keepScroll = !(opts && opts.resetScroll);
   const anchor = keepScroll ? captureReadingAnchor() : null;
   try {
@@ -3597,7 +3657,7 @@ async function renderLessonDetailBody() {
     <div class="page-head">
       <div class="title-wrap">
         <h1>${escapeHtml(lesson.title)}</h1>
-        <p class="sub">${lesson.kind.toUpperCase()} · ${fmtDate(lesson.createdAt)} · ${lesson.slides?.length || 0} slides · ${lesson.points?.length || 0} points · ${cards.length} cards</p>
+        <p class="sub">${lesson.kind.toUpperCase()} · ${fmtDate(lesson.createdAt)} · ${lesson.slides?.length || 0} slides · ${lesson.points?.length || 0} points · ${cards.length} cards${lessonSecondsOf(lesson.id) >= 60 ? ` · ⏱ 已复习 ${fmtDuration(lessonSecondsOf(lesson.id))}` : ""}</p>
         ${readPosChip(lesson.id, lesson.points?.length || 0)}
         ${subjectPicker}
         ${courseBriefBox(lesson)}
@@ -8386,6 +8446,7 @@ function showReviewCard() {
   if (reviewPos >= reviewQueue.length) { finishReview(); return; }
   reviewFlipped = false;
   const entry = reviewQueue[reviewPos];
+  setStudyTarget(reviewEntryLessonId(entry));
   const remaining = reviewQueue.length - reviewPos;
   const head = `
     <div class="page-head">
@@ -10199,7 +10260,7 @@ async function renderSearch() {
 }
 
 /* ---------------- Backup / restore ---------------- */
-const BACKUP_STORES = ["lessons", "cards", "quizzes", "mistakes", "studyLog"];
+const BACKUP_STORES = ["lessons", "cards", "quizzes", "mistakes", "studyLog", "sessions", "lessonTime"];
 
 async function exportBackup() {
   const data = {};

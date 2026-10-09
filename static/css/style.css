@@ -423,6 +423,31 @@ mark.hl.cloze-wrong { background: #fecaca; border-bottom: 2px solid var(--red); 
    cloze-revealed (or cloze-wrong) from a previous run made every blank look green
    or red instead of grey. */
 mark.hl.cloze-hidden { background: #e2e8f0; color: #64748b; border-bottom: 2px solid var(--brand); cursor: pointer; }
+
+/* ---------- Manual masks (🙈 遮住选中) ----------
+   The original characters are removed from the DOM while a mask is hidden (they
+   live in data-text), so everything that has to stay visible is painted by CSS:
+   .kp-mask-t::before draws the blocks and .kp-mask-x::before draws the ×. That
+   keeps textContent equal to the original text minus exactly the masked fragment. */
+.kp-manual-mask {
+  display: inline; background: #0f172a; border-radius: 4px; padding: 0 4px;
+  cursor: pointer; user-select: none; -webkit-user-select: none;
+  box-decoration-break: clone; -webkit-box-decoration-break: clone;
+}
+.kp-manual-mask .kp-mask-t { color: transparent; }
+.kp-manual-mask .kp-mask-t::before { content: "▮▮▮▮"; color: #cbd5e1; font-size: .82em; letter-spacing: .5px; }
+.kp-manual-mask.revealed { background: var(--brand-soft); box-shadow: 0 0 0 1px var(--brand); }
+.kp-manual-mask.revealed .kp-mask-t { color: inherit; }
+.kp-manual-mask.revealed .kp-mask-t::before { content: none; }
+.kp-mask-x {
+  display: none; vertical-align: middle; margin-left: 3px; padding: 0; width: 15px; height: 15px;
+  border: 0; border-radius: 50%; background: var(--red); color: #fff; font-size: 11px; line-height: 15px;
+  cursor: pointer;
+}
+.kp-manual-mask:hover .kp-mask-x, .kp-manual-mask.revealed .kp-mask-x { display: inline-block; }
+.kp-mask-x::before { content: "×"; }
+#mask-float-btn { position: fixed; z-index: 3000; box-shadow: var(--shadow); }
+
 .kp-section.recalling .kp-subtitle { text-decoration: underline; text-underline-offset: 3px; }
 .recall-tip { font-size: 13px; color: var(--text-2); background: var(--surface-2); padding: 8px 12px; border-radius: 8px; margin-bottom: 8px; }
 .recall-rate .btn { padding: 4px 10px; font-size: 13px; }

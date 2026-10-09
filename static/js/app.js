@@ -232,6 +232,370 @@ function setCloze(mark, hidden) {
   }
 }
 
+/* ---------------- Manual masks (🙈 遮住选中) ----------------
+ * The cloze above only blanks the model's own keyTerms. This lets the student
+ * blank exactly the text they select.
+ *
+ * Storage: `point.masks = ["原文片段", ...]` — plain rendered text, never HTML —
+ * written back through the normal lesson PUT (db.put("lessons", lesson)).
+ *
+ * Re-finding a fragment: the body is md-rendered, so a string replace on the
+ * markdown source would cut through tags. A TreeWalker walks the text nodes of
+ * the rendered body instead, finds the fragment in the container's *flat* text
+ * and wraps every covered text node in its own `.kp-manual-mask` span. One mask
+ * can therefore be several spans (a selection may cross <strong>/<li> edges);
+ * they share data-key/data-i and are revealed or removed as a group.
+ *
+ * While hidden, the original characters are kept out of the DOM (only in
+ * data-text): the blocks are painted by `.kp-mask-t::before` and the × by
+ * `.kp-mask-x::before`, so the container's textContent stays equal to the
+ * original text minus exactly the masked fragment — which is how a test (or a
+ * human) can verify that nothing else moved.
+ *
+ * A fragment that no longer exists (an edited explanation) is skipped silently
+ * instead of throwing.
+ */
+const manualMaskRevealed = new Set(); // "lessonId:idx:i" — reveal is session-only
+
+function maskKey(lessonId, idx) { return String(lessonId) + ":" + Number(idx); }
+
+// Text nodes a mask may live in. Formulas are skipped: KaTeX lays each symbol out
+// twice (MathML + HTML), so wrapping its text nodes corrupts the formula and its
+// text would not match the selection anyway.
+function maskableTextNodes(root) {
+  const out = [];
+  if (!root || !document.createTreeWalker) return out;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.nodeValue) return NodeFilter.FILTER_REJECT;
+      const parent = node.parentElement;
+      if (!parent) return NodeFilter.FILTER_REJECT;
+      if (parent.closest(".katex, .kp-manual-mask, button, textarea, input, select")) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) out.push(n);
+  return out;
+}
+
+// Which point a selected node belongs to: lesson-detail bodies carry data-idx on
+// the .kp-section, the review card carries data-lesson/data-idx on .r-a.
+function maskTargetFor(node) {
+  const el = node && (node.nodeType === 1 ? node : node.parentElement);
+  if (!el || !el.closest) return null;
+  const sec = el.closest(".kp-section[data-idx]");
+  if (sec) {
+    const body = sec.querySelector(".kp-body");
+    if (body && currentLessonId) return { lessonId: currentLessonId, idx: Number(sec.dataset.idx), body };
+  }
+  const ra = el.closest(".r-a[data-idx][data-lesson]");
+  if (ra) return { lessonId: ra.dataset.lesson, idx: Number(ra.dataset.idx), body: ra };
+  return null;
+}
+
+// The selected text restricted to maskable nodes: formula text is left out, so a
+// selection that strays into a formula still masks the readable part around it.
+function maskSelectionText(range, body) {
+  const nodes = maskableTextNodes(body);
+  const parts = [];
+  let any = false;
+  for (const node of nodes) {
+    let inRange = false;
+    try { inRange = range.intersectsNode(node); } catch { inRange = false; }
+    if (!inRange) continue;
+    const len = node.nodeValue.length;
+    const a = range.startContainer === node ? range.startOffset : 0;
+    const b = range.endContainer === node ? range.endOffset : len;
+    if (b > a) { any = true; parts.push(node.nodeValue.slice(a, b)); }
+  }
+  if (!any) return null;
+  const text = parts.join("").trim();
+  return text ? { text } : null;
+}
+
+// Wrap every stored fragment found in `body`. Returns how many fragments were
+// actually re-found (a fragment whose text disappeared is skipped).
+function applyManualMasks(body, masks, key) {
+  if (!body) return 0;
+  const list = (Array.isArray(masks) ? masks : []).map((s) => String(s == null ? "" : s)).filter((s) => s.trim());
+  if (!list.length) return 0;
+  let applied = 0;
+  list.forEach((text, i) => {
+    // Re-walk per fragment: the previous mask has already restructured the DOM,
+    // so stale text-node references and a stale flat string would map the next
+    // fragment onto the wrong characters.
+    const nodes = maskableTextNodes(body);
+    if (!nodes.length) return;
+    const flat = nodes.map((n) => n.nodeValue).join("");
+    const at = flat.indexOf(text);
+    if (at < 0) return;
+    const end = at + text.length;
+    let cursor = 0;
+    const hits = [];
+    for (const node of nodes) {
+      const len = node.nodeValue.length;
+      const a = Math.max(at, cursor) - cursor;
+      const b = Math.min(end, cursor + len) - cursor;
+      if (b > a) hits.push({ node, a, b });
+      cursor += len;
+      if (cursor >= end) break;
+    }
+    if (!hits.length) return;
+    const revealed = manualMaskRevealed.has(key + ":" + i);
+    hits.forEach((hit, k) => {
+      const node = hit.node;
+      if (hit.b < node.nodeValue.length) node.splitText(hit.b);
+      const mid = hit.a > 0 ? node.splitText(hit.a) : node;
+      const span = document.createElement("span");
+      span.className = "kp-manual-mask" + (revealed ? " revealed" : "");
+      span.dataset.i = String(i);
+      span.dataset.key = key;
+      span.dataset.text = mid.nodeValue;
+      const t = document.createElement("span");
+      t.className = "kp-mask-t";
+      if (revealed) t.textContent = mid.nodeValue;
+      span.appendChild(t);
+      if (k === hits.length - 1) {
+        const x = document.createElement("button");
+        x.type = "button";
+        x.className = "kp-mask-x";
+        x.title = "移除这个手动遮字";
+        x.setAttribute("aria-label", "移除手动遮字");
+        span.appendChild(x);
+      }
+      mid.parentNode.replaceChild(span, mid);
+    });
+    applied++;
+  });
+  return applied;
+}
+
+// Undo applyManualMasks on a live container (used before re-applying after a
+// mask is added/removed), then merge the split text nodes back together so the
+// flat text is byte-identical to the untouched rendering.
+function stripManualMasks(root) {
+  if (!root || !root.querySelectorAll) return;
+  root.querySelectorAll(".kp-manual-mask").forEach((span) => {
+    span.replaceWith(document.createTextNode(span.dataset.text || ""));
+  });
+  try { root.normalize(); } catch { /* detached node */ }
+}
+
+function manualMaskGroup(span) {
+  const root = span.closest(".kp-body, .r-a") || document;
+  const key = span.dataset.key;
+  const i = span.dataset.i;
+  return [...root.querySelectorAll('.kp-manual-mask[data-i="' + i + '"]')].filter((s) => s.dataset.key === key);
+}
+
+function toggleManualMask(span) {
+  if (!span) return;
+  const key = span.dataset.key;
+  const i = span.dataset.i;
+  const group = manualMaskGroup(span);
+  const willReveal = !(group[0] || span).classList.contains("revealed");
+  group.forEach((s) => {
+    s.classList.toggle("revealed", willReveal);
+    const t = s.querySelector(".kp-mask-t");
+    if (t) t.textContent = willReveal ? (s.dataset.text || "") : "";
+  });
+  if (willReveal) manualMaskRevealed.add(key + ":" + i);
+  else manualMaskRevealed.delete(key + ":" + i);
+}
+
+function masksOf(lessonId, idx) {
+  const lesson = fullLessonCache.get(lessonId);
+  const p = lesson && (lesson.points || [])[idx];
+  return Array.isArray(p && p.masks) ? p.masks.slice() : [];
+}
+
+// Persist the mask list on the point and repaint it in place (no full page
+// re-render, so the scroll position survives). The whole full lesson record is
+// written back, exactly like every other edit on this page, so nothing else in
+// the lesson is lost — the server's content-loss guard would answer 409 if it
+// were missing fields, and db.put throws on anything but a 2xx.
+async function saveManualMasks(lessonId, idx, masks) {
+  const lesson = await getLessonFull(lessonId).catch(() => null);
+  if (!lesson || !Array.isArray(lesson.points) || !lesson.points[idx]) {
+    toast("找不到这条知识点，遮字没有保存", "error");
+    return false;
+  }
+  const clean = (masks || []).map((s) => String(s == null ? "" : s)).filter((s) => s.trim());
+  const point = lesson.points[idx];
+  if (clean.length) point.masks = clean;
+  else delete point.masks;
+  lesson.updatedAt = Date.now();
+  try {
+    await db.put("lessons", lesson);
+  } catch (err) {
+    toast("遮字保存失败：" + (err && err.message ? err.message : err), "error");
+    return false;
+  }
+  fullLessonCache.set(lesson.id, lesson);
+  syncQueueMasks(lesson.id, idx, clean);
+  refreshManualMasks(lesson.id, idx);
+  return true;
+}
+
+// The 今日学习 queue holds its own (list-view) copy of the point; keep it in step
+// so a mask removed from the review card does not come back when the card is
+// re-shown later in the same session.
+function syncQueueMasks(lessonId, idx, masks) {
+  for (const e of reviewQueue) {
+    if (!e || e.kind !== "point" || !e.lesson) continue;
+    if (String(e.lesson.id) !== String(lessonId) || Number(e.idx) !== Number(idx)) continue;
+    e.point = { ...(e.point || {}), masks };
+    if (e.lesson.points && e.lesson.points[idx]) e.lesson.points[idx].masks = masks;
+  }
+}
+
+function refreshManualMasks(lessonId, idx) {
+  const lesson = fullLessonCache.get(lessonId);
+  const p = lesson && (lesson.points || [])[idx];
+  const masks = (p && p.masks) || [];
+  const key = maskKey(lessonId, idx);
+  const card = document.getElementById("kp-" + idx);
+  if (card) {
+    const body = card.querySelector(".kp-body");
+    if (body) { stripManualMasks(body); applyManualMasks(body, masks, key); }
+    const strip = card.querySelector(".kp-subhead span:last-child");
+    let btn = card.querySelector(".clear-masks-btn");
+    if (masks.length && !btn && strip) {
+      btn = document.createElement("button");
+      btn.className = "btn btn-sm btn-ghost clear-masks-btn";
+      btn.dataset.idx = String(idx);
+      btn.title = "移除这条知识点上的全部手动遮字";
+      btn.textContent = "🗑 清除手动遮字";
+      const cloze = strip.querySelector(".cloze-btn");
+      if (cloze) cloze.insertAdjacentElement("afterend", btn);
+      else strip.insertBefore(btn, strip.firstChild);
+    } else if (!masks.length && btn) {
+      btn.remove();
+    }
+  }
+  document.querySelectorAll(".r-a[data-idx][data-lesson]").forEach((ra) => {
+    if (String(ra.dataset.lesson) !== String(lessonId) || Number(ra.dataset.idx) !== Number(idx)) return;
+    stripManualMasks(ra);
+    applyManualMasks(ra, masks, key);
+  });
+}
+
+async function removeManualMask(span) {
+  if (!span) return;
+  const key = span.dataset.key || "";
+  const parts = key.split(":");
+  const lessonId = parts[0];
+  const idx = Number(parts[1]);
+  const i = Number(span.dataset.i);
+  const masks = masksOf(lessonId, idx);
+  if (!lessonId || !Number.isFinite(idx) || i < 0 || i >= masks.length) { toast("遮字已经移除", "warn"); return; }
+  masks.splice(i, 1);
+  // Removing shifts the indices, and the session reveal set is index-keyed.
+  [...manualMaskRevealed].forEach((k) => { if (k.startsWith(key + ":")) manualMaskRevealed.delete(k); });
+  if (await saveManualMasks(lessonId, idx, masks)) toast("已移除遮字 ✓", "success");
+}
+
+async function clearManualMasks(lessonId, idx) {
+  const n = masksOf(lessonId, idx).length;
+  if (!n) return;
+  if (!confirm(`清除这条知识点上的 ${n} 处手动遮字？`)) return;
+  const key = maskKey(lessonId, idx);
+  [...manualMaskRevealed].forEach((k) => { if (k.startsWith(key + ":")) manualMaskRevealed.delete(k); });
+  if (await saveManualMasks(lessonId, idx, [])) toast("已清除手动遮字 ✓", "success");
+}
+
+// ---- The floating "🙈 遮住选中" button ----
+let maskSel = null;      // { text, target } captured at selection time
+let maskBtnEl = null;
+let maskBtnTimer = null;
+
+function maskFloatBtn() {
+  if (maskBtnEl) return maskBtnEl;
+  maskBtnEl = document.createElement("button");
+  maskBtnEl.type = "button";
+  maskBtnEl.id = "mask-float-btn";
+  maskBtnEl.className = "btn btn-primary btn-sm";
+  maskBtnEl.textContent = "🙈 遮住选中";
+  maskBtnEl.hidden = true;
+  // Keep the selection alive: without this the mousedown clears it before click.
+  maskBtnEl.addEventListener("mousedown", (e) => e.preventDefault());
+  maskBtnEl.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); commitMaskSelection(); });
+  document.body.appendChild(maskBtnEl);
+  return maskBtnEl;
+}
+
+function hideMaskBtn() {
+  if (maskBtnEl) maskBtnEl.hidden = true;
+  maskSel = null;
+}
+
+function updateMaskBtn() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) { hideMaskBtn(); return; }
+  const range = sel.getRangeAt(0);
+  const target = maskTargetFor(range.commonAncestorContainer);
+  if (!target) { hideMaskBtn(); return; }
+  const picked = maskSelectionText(range, target.body);
+  if (!picked) { hideMaskBtn(); return; }
+  const btn = maskFloatBtn();
+  maskSel = { text: picked.text, target };
+  btn.hidden = false;
+  const r = range.getBoundingClientRect();
+  const w = btn.offsetWidth || 130;
+  let left = r.left + r.width / 2 - w / 2;
+  left = Math.max(8, Math.min(window.innerWidth - w - 8, left));
+  const top = r.top > 56 ? r.top - 42 : r.bottom + 10;
+  btn.style.left = left + "px";
+  btn.style.top = top + "px";
+}
+
+async function commitMaskSelection() {
+  const snap = maskSel;
+  hideMaskBtn();
+  if (!snap) return;
+  const { text, target } = snap;
+  // Drop the browser selection so the button does not immediately pop back up
+  // over the text we just masked.
+  try { const s = window.getSelection(); if (s) s.removeAllRanges(); } catch { /* none */ }
+  const lesson = fullLessonCache.get(target.lessonId) || await getLessonFull(target.lessonId).catch(() => null);
+  const point = lesson && (lesson.points || [])[target.idx];
+  const masks = Array.isArray(point && point.masks) ? point.masks.slice() : [];
+  if (masks.includes(text)) { toast("这段文字已经遮住了", "warn"); return; }
+  masks.push(text);
+  if (await saveManualMasks(target.lessonId, target.idx, masks)) {
+    toast(`已遮住 ${text.length} 个字 ✓`, "success");
+  }
+}
+
+function installManualMaskUI() {
+  if (installManualMaskUI.done) return;
+  installManualMaskUI.done = true;
+  maskFloatBtn();
+  document.addEventListener("selectionchange", () => {
+    clearTimeout(maskBtnTimer);
+    maskBtnTimer = setTimeout(updateMaskBtn, 0);
+  });
+  document.addEventListener("mouseup", (e) => {
+    if (e.target && e.target.closest && e.target.closest("#mask-float-btn")) return;
+    clearTimeout(maskBtnTimer);
+    maskBtnTimer = setTimeout(updateMaskBtn, 0);
+  });
+  document.addEventListener("mousedown", (e) => {
+    if (e.target && e.target.closest && e.target.closest("#mask-float-btn")) return;
+    hideMaskBtn();
+  });
+  document.addEventListener("scroll", hideMaskBtn, true);
+}
+
+// Shared click handling for a container that renders manual masks.
+function handleManualMaskClick(e) {
+  const x = e.target.closest && e.target.closest(".kp-mask-x");
+  if (x) { e.preventDefault(); e.stopPropagation(); removeManualMask(x.closest(".kp-manual-mask")); return true; }
+  const span = e.target.closest && e.target.closest(".kp-manual-mask");
+  if (span) { toggleManualMask(span); return true; }
+  return false;
+}
+
 // ---- Active-recall cloze: hide every term in a point, reveal them one at a
 //      time (Space), and self-rate "记住 / 没记住". Missed terms are saved to
 //      p.weakTerms so weak spots show up on the point and in review.
@@ -2618,6 +2982,7 @@ async function init() {
     const known = ["dashboard", "lessons", "nav", "review", "mistakes", "favs", "progress", "formulas", "tokens", "search", "settings"];
     if (want && known.includes(want) && authed) navigate(want);
   } catch { /* malformed query — ignore */ }
+  installManualMaskUI();
   initPet();
   initHiddenMenu();
 }
@@ -4663,6 +5028,12 @@ function renderPointsTab(body, lesson) {
       btn.textContent = hiding ? "👁 显示" : "🙈 遮字";
       return;
     }
+    // Manual masks: click the block to peek at the text, × to remove it, and the
+    // 🗑 button to clear every mask on the point. Handled before the auto-cloze
+    // <mark> branch so a mask sitting inside a highlighted term still responds.
+    if (handleManualMaskClick(e)) return;
+    const clearMasks = e.target.closest(".clear-masks-btn");
+    if (clearMasks) { await clearManualMasks(currentLessonId, Number(clearMasks.dataset.idx)); return; }
     const mark = e.target.closest("mark.hl");
     if (mark) setCloze(mark, !mark.classList.contains("cloze-hidden"));
   });
@@ -4753,6 +5124,15 @@ function renderPointsTab(body, lesson) {
         if (full) openCropPicker(currentLessonId, slideIdx, full, crop, saveCrop);
         else openModal(`<h2 style="margin-bottom:12px">Slide ${slideIdx}</h2><img src="${mainImg.src}" style="max-width:100%;max-height:70vh;object-fit:contain;border-radius:10px">`);
       });
+    });
+    // Re-apply the point's manual masks on the freshly rendered DOM. Done here
+    // (after every branch and after the search-hit annotations) so it sees the
+    // final markup; masks are DOM wraps, so anything that rebuilds a body has to
+    // call applyManualMasks again (see applyPointLanguage / refreshManualMasks).
+    list.querySelectorAll(".kp-section[data-idx]").forEach((sec) => {
+      const p = points[Number(sec.dataset.idx)];
+      if (!p || !(p.masks || []).length) return;
+      applyManualMasks(sec.querySelector(".kp-body"), p.masks, maskKey(currentLessonId, Number(sec.dataset.idx)));
     });
   };
   // Two independent chip groups share this bar: data-f picks the filter, data-o
@@ -5214,6 +5594,9 @@ function applyPointLanguage(lesson, idx) {
     // Chinese gets term highlighting; the English text has no Chinese terms to mark.
     body.innerHTML = (showEn ? mdFull(text) : mdFull(highlightTerms(text, terms)))
       + (supp ? `<div class="kp-supplement"><b>💡 理解:</b> ${mdInline(supp)}</div>` : "");
+    // Manual masks are stored as Chinese fragments: they only make sense in the
+    // Chinese body (the same reason the auto-cloze button is hidden in EN view).
+    if (!showEn) applyManualMasks(body, point.masks, maskKey(lesson.id, idx));
   }
 
   const enBtn = card.querySelector(".en-btn");
@@ -5345,6 +5728,7 @@ function pointSection(p, lesson, shownSlides) {
           <button class="btn btn-sm btn-ghost en-btn" data-idx="${idx}" title="${showEn ? "切回中文" : "翻译成英文（首次需调用一次 AI，之后缓存）"}">🌐 ${showEn ? "中文" : "EN"}</button>
           ${p.slide != null ? `<button class="btn btn-sm btn-ghost slide-nav" data-lesson="${lesson.id}" data-slide="${p.slide}" title="跳转到原课件对应页">📄 Slide ${p.slide}</button>` : ""}
           ${terms.length && !showEn ? `<button class="btn btn-sm btn-ghost cloze-btn" data-state="shown">🙈 遮字</button>` : ""}
+          ${(p.masks || []).length ? `<button class="btn btn-sm btn-ghost clear-masks-btn" data-idx="${idx}" title="移除这条知识点上的全部手动遮字">🗑 清除手动遮字</button>` : ""}
           ${terms.length ? `<button class="btn btn-sm btn-ghost recall-btn" data-state="idle" title="逐个回想术语：空格揭示 → 自评记住/没记住">🔎 回忆</button>` : ""}
         </span>
       </div>
@@ -8658,7 +9042,7 @@ function showReviewCard() {
   }
 
   // Knowledge point (Feynman-style recall)
-  const { lesson, point } = entry;
+  const { lesson, point, idx } = entry;
   const preview = [0, 1, 2, 3].map((g) => schedulePoint(point, g));
   const imp = point.importance === "high" ? "high" : point.importance === "low" ? "low" : "medium";
   $("#view").innerHTML = head + `
@@ -8675,7 +9059,7 @@ function showReviewCard() {
       <button class="btn btn-primary btn-lg" id="r-reveal" style="width:100%">显示答案 <span style="opacity:.6;font-weight:400">(空格 / ↑↓)</span></button>
       <div id="r-grades" hidden style="margin-top:16px">
         <div class="card" style="border-color:var(--brand)">
-          <div class="r-a">${mdFull(highlightTerms(explanationText(point.explanation), point.keyTerms))}</div>
+          <div class="r-a" data-lesson="${escapeHtml(lesson.id)}" data-idx="${Number(idx)}">${mdFull(highlightTerms(explanationText(point.explanation), point.keyTerms))}</div>
           ${keyTermChecklist(point)}
           ${point.mnemonic ? `<div class="kp-mnemonic"><b>🧠 Mnemonic:</b> ${md(point.mnemonic)}</div>` : ""}
           ${point.supplement ? `<div class="kp-supplement"><b>💡 理解:</b> ${mdInline(point.supplement)}</div>` : ""}
@@ -8693,6 +9077,14 @@ function showReviewCard() {
     </div>`;
   $("#r-reveal").addEventListener("click", flipReviewCard);
   $("#view").querySelectorAll(".grade-btn").forEach((b) => b.addEventListener("click", () => gradeStudyEntry(parseInt(b.dataset.g, 10))));
+  // Manual masks apply to the revealed answer too: same wrap, same click-to-peek
+  // and ×-to-remove as the knowledge-point tab. The container is rebuilt for every
+  // card, so the listener rides along with it.
+  const raEl = $("#view").querySelector(".r-a[data-lesson][data-idx]");
+  if (raEl) {
+    applyManualMasks(raEl, point.masks, maskKey(lesson.id, Number(idx)));
+    raEl.addEventListener("click", (e) => { handleManualMaskClick(e); });
+  }
   if (point.slide != null) loadReviewPointFigure(lesson.id, point.slide, "r-figs");
 }
 

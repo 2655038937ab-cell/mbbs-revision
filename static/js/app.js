@@ -2919,6 +2919,28 @@ function feynmanPct(stage) {
   return [0, 33, 67, 100][stage] ?? 0;
 }
 
+/* The lesson card's bar: what the quiz actually produced.
+ *
+ * Green is answers that were right, red is everything in the bank that was not (wrong, or
+ * still untouched after an attempt), so finishing the quiz fills the bar — that is the
+ * "做完就是 100%" the user asked for. A bank that exists but has never been attempted shows
+ * a plain empty bar: painting it fully red would read as "you got everything wrong".
+ * The percentage pill next to it keeps its own meaning (best score ÷ bank size). */
+function quizResultBar(l) {
+  const total = Number(l.quizTotal) || 0;
+  if (!l.quizTaken || !total) {
+    return `<div class="progress-bar" style="height:6px;margin-top:8px" title="还没做过这门课的测验"></div>`;
+  }
+  const right = Math.max(0, Math.min(total, Number(l.quizRight) || 0));
+  const okPct = (right / total) * 100;
+  const badPct = 100 - okPct;
+  return `<div class="progress-bar" style="height:6px;margin-top:8px;display:flex;overflow:hidden"
+      title="绿色 ${right}/${total} 答对 · 红色 ${total - right} 答错或未答对">
+      <div style="width:${okPct}%;background:#16a34a"></div>
+      <div style="width:${badPct}%;background:#dc2626"></div>
+    </div>`;
+}
+
 function isMastered(p) {
   return p.feynmanStage != null && p.feynmanStage >= 2;
 }
@@ -2958,6 +2980,8 @@ function computeMasteryMap(lessons, cards, quizzes) {
     map[l.id] = {
       totalCards: lc.length, seen, mature, quiz: q,
       pointPct: pm.pointPct, reviewedPoints: pm.reviewed, totalPoints: pm.total,
+      // 红绿进度条要用的：是否做过测验、答对几题、题库总数
+      quizTaken: quizPct != null, quizRight: q ? (q.score ?? 0) : 0, quizTotal: qTotal,
       hasPoints: (l.points || []).length > 0, hasCards: lc.length > 0, hasQuiz: quizPct != null,
       pct: quizPct == null ? 0 : Math.round(quizPct),
     };
@@ -3131,11 +3155,8 @@ function autoSaveCurrentProgress() {
   try {
     // Quiz in progress: persist answers + running score.
     if (quizSession && quizSession.quiz) {
-      const qz = quizSession.quiz;
-      qz.userAnswers = quizSession.answers.slice();
-      qz.score = quizSession.answers.filter((a, j) => a === qz.questions[j].answer).length;
-      qz.completed = false;
-      db.put("quizzes", qz).catch(() => {});
+      const qz = sessionCommitQuiz({ completed: false });
+      if (qz) db.put("quizzes", qz).catch(() => {});
     }
     // Feynman in progress: persist the session's graded points.
     if (feynmanSession && feynmanSession.lesson) {
@@ -3248,7 +3269,8 @@ async function renderDashboard() {
   const duePoints = plan.duePointCount;
   const totalPoints = lessons.reduce((a, l) => a + (l.points?.length || 0), 0);
   const mastery = computeMasteryMap(lessons, cards, quizzes);
-  const lessonsWith = withStats(lessons, cards).map((l) => ({ ...l, pct: mastery[l.id]?.pct ?? 0 }));
+  const lessonsWith = withStats(lessons, cards).map((l) => ({ ...l, pct: mastery[l.id]?.pct ?? 0,
+    quizTaken: mastery[l.id]?.quizTaken, quizRight: mastery[l.id]?.quizRight, quizTotal: mastery[l.id]?.quizTotal }));
   const t = computeTimeStats(log);
   const goalMin = getGoalMinutes();
   const goalPct = Math.min(100, Math.round((t.todaySec / (goalMin * 60)) * 100));
@@ -3502,7 +3524,7 @@ function lessonRow(l, cls, catOpts) {
         </div>
         <div class="sub">${l.kind.toUpperCase()} · ${fmtDate(l.createdAt)} · ${l.slides?.length || 0} slides</div>
         ${l.folderId ? `<div class="sub" style="font-size:11px;color:var(--brand)">📁 ${escapeHtml(folderName(currentFolders, l.folderId))}</div>` : ""}
-        ${showBar ? `<div class="progress-bar" style="height:6px;margin-top:8px"><div class="progress-fill" style="width:${pct}%"></div></div>` : ""}
+        ${showBar ? quizResultBar(l) : ""}
         ${showCat ? `<div style="margin-top:8px">
           <select class="lesson-cat search-select" data-lesson="${l.id}" title="设置该课分类（自动 = 按分类规则匹配）" style="font-size:12px;padding:3px 8px;max-width:200px">
             <option value="">自动（按标题匹配）</option>
@@ -3562,7 +3584,8 @@ async function renderLessons() {
   ]);
   currentFolders = folders || [];
   const mastery = computeMasteryMap(lessons, cards, quizzes);
-  let lessonsWith = withStats(lessons, cards).map((l) => ({ ...l, pct: mastery[l.id]?.pct ?? 0 }));
+  let lessonsWith = withStats(lessons, cards).map((l) => ({ ...l, pct: mastery[l.id]?.pct ?? 0,
+    quizTaken: mastery[l.id]?.quizTaken, quizRight: mastery[l.id]?.quizRight, quizTotal: mastery[l.id]?.quizTotal }));
   // Active folder filter ("" all, "__none__" unfiled, else a folder id).
   if (lessonsFolderFilter === "__none__") lessonsWith = lessonsWith.filter((l) => !l.folderId);
   else if (lessonsFolderFilter) lessonsWith = lessonsWith.filter((l) => l.folderId === lessonsFolderFilter);
@@ -6002,6 +6025,10 @@ function renderQuizTab(body, lesson, quiz) {
       </div>
       <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-accent" id="btn-take">▶ Take quiz</button>
+        ${(() => {
+          const wrongN = (quiz.userAnswers || []).filter((a, i) => a != null && (quiz.questions || [])[i] && a !== quiz.questions[i].answer).length;
+          return wrongN ? `<button class="btn btn-ghost" id="btn-take-wrong" title="只做上次答错的这 ${wrongN} 道题（成绩会合并回题库，不会覆盖其它题）">🧯 只做错题 (${wrongN})</button>` : "";
+        })()}
         ${answeredCount ? `<button class="btn btn-ghost" id="btn-review" title="逐题回看你的作答：你的答案、正确答案和解析">🕘 回看已答 (${answeredCount})</button>` : ""}
         <button class="btn btn-ghost" id="btn-preview">📖 预览题目</button>
         <button class="btn btn-ghost" id="btn-regenq">↻ Regenerate questions</button>
@@ -6034,6 +6061,8 @@ function renderQuizTab(body, lesson, quiz) {
     }).join("")}</div>
   `;
   $("#btn-take").addEventListener("click", () => startQuiz(currentLessonId));
+  const takeWrong = $("#btn-take-wrong");
+  if (takeWrong) takeWrong.addEventListener("click", () => startQuiz(currentLessonId, { onlyWrong: true }));
   $("#btn-preview").addEventListener("click", () => quizPreviewEnter(currentLessonId, 0));
   $("#btn-regenq").addEventListener("click", () => regenerateQuiz(currentLessonId));
   const br = $("#btn-review");
@@ -8636,6 +8665,29 @@ async function finishFeynman() {
 
 /* ---------------- Quiz taking ---------------- */
 let quizSession = null;
+
+/* Write the session's answers into the real quiz record.
+ *
+ * Normally the session IS the record. In "只做错题" mode the session holds a copy of the
+ * bank containing only the questions that were wrong, so the answers are merged back at
+ * the positions the map remembers — otherwise practicing the wrong ones would overwrite
+ * the record with answers for questions 1..n of a subset. */
+function sessionCommitQuiz(extra = {}) {
+  const s = quizSession;
+  if (!s || !s.quiz) return null;
+  const src = s.sourceQuiz || s.quiz;
+  const map = s.quiz.sessionIndexMap || null;
+  if (!map) {
+    src.userAnswers = s.answers.slice();
+  } else {
+    const ua = (src.userAnswers || []).slice();
+    map.forEach((origIdx, j) => { if (s.answers[j] != null) ua[origIdx] = s.answers[j]; });
+    src.userAnswers = ua;
+  }
+  src.score = (src.userAnswers || []).filter((a, j) => a === ((src.questions || [])[j] || {}).answer).length;
+  Object.assign(src, extra);
+  return src;
+}
 let quizKeyHandler = null;
 let cardsKbHandler = null;
 
@@ -8693,7 +8745,7 @@ async function recordQuizMistake(lesson, w) {
   } catch { /* ignore transient errors */ }
 }
 
-async function startQuiz(lessonId) {
+async function startQuiz(lessonId, opts = {}) {
   const [quizRecs, lesson] = await Promise.all([
     db.getAllByIndex("quizzes", "lessonId", lessonId),
     db.get("lessons", lessonId),
@@ -8703,10 +8755,24 @@ async function startQuiz(lessonId) {
   if (!quiz) return;
   quizFavOnly = false; // the bank's filter must not follow the reader into an attempt
   setActivity("quiz");
-  // Resume a partially-answered quiz (progress is saved after each answer).
-  const saved = (quiz.userAnswers || []).filter((_, i) => i < (quiz.questions || []).length);
-  const resumePos = (saved.length > 0 && !quiz.completed) ? saved.length : 0;
-  quizSession = { quiz, lesson, pos: resumePos, answers: resumePos ? saved : [], wrong: [] };
+  if (opts.onlyWrong) {
+    // Practise only what was answered wrong before: the session gets a copy of the bank
+    // holding just those questions, plus the map back to their real positions.
+    const idx = (quiz.userAnswers || [])
+      .map((a, i) => (a != null && (quiz.questions || [])[i] && a !== quiz.questions[i].answer ? i : -1))
+      .filter((i) => i >= 0);
+    if (!idx.length) { toast("这门课还没有错题 —— 先做一遍题目吧", "error"); return; }
+    const subset = idx.map((i) => quiz.questions[i]);
+    quizSession = {
+      quiz: { ...quiz, questions: subset, userAnswers: [], sessionIndexMap: idx },
+      sourceQuiz: quiz, lesson, pos: 0, answers: [], wrong: [],
+    };
+  } else {
+    // Resume a partially-answered quiz (progress is saved after each answer).
+    const saved = (quiz.userAnswers || []).filter((_, i) => i < (quiz.questions || []).length);
+    const resumePos = (saved.length > 0 && !quiz.completed) ? saved.length : 0;
+    quizSession = { quiz, lesson, pos: resumePos, answers: resumePos ? saved : [], wrong: [] };
+  }
   // Space / Enter advances once the question is answered; ← / → step through the
   // quiz so an earlier answer can be re-read without the mouse.
   if (quizKeyHandler) document.removeEventListener("keydown", quizKeyHandler);
@@ -8850,12 +8916,8 @@ function renderQuizQuestion() {
     quizSession.answers.push(i);
     // Save progress after EVERY answer (so refresh/exit keeps the attempt).
     {
-      const qz = quizSession.quiz;
-      qz.userAnswers = quizSession.answers.slice();
-      qz.score = quizSession.answers.filter((a, j) => a === qz.questions[j].answer).length;
-      qz.completed = false;
-      qz.lastTaken = Date.now();
-      db.put("quizzes", qz);
+      const qz = sessionCommitQuiz({ completed: false, lastTaken: Date.now() });
+      if (qz) db.put("quizzes", qz);
     }
     if (!right) {
       const wrong = { ...q, userAnswer: i };

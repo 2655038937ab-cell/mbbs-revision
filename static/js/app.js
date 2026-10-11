@@ -6810,10 +6810,16 @@ async function refreshUploadLimit() {
   return _maxUploadMb;
 }
 
+/* Folder chosen on the upload sheet, applied to every lesson the current upload creates.
+ * Read here rather than passed through each call site so a new upload path cannot forget
+ * it; empty means 未分类. */
+let pendingUploadFolderId = "";
+
 async function openUpload() {
   await refreshUploadLimit();
   const remembered = localStorage.getItem("mbbs_up_autogen") !== "0"; // default on
   const picked = []; // File[]
+  const upFolders = await db.getAll("folders").catch(() => []) || [];
   openModal(`
     <h2>📥 上传课程</h2>
     <p class="sub" style="margin-bottom:14px">支持 <b>.pptx</b> / <b>.pdf</b> / <b>.docx</b>，也可以直接传<b>图片</b>（拍照或截图，每张图一页）。可一次选多个文件；同一节课的多个文件可以<b>合并成一门课</b>。<br><span style="opacity:.8">试卷/练习：上传后点课程里的「🧪 试卷解析」，会先列出每道题考的考点并讲解，最后给出答案与解题思路。Word 里的图片不会导入，图文并茂的试卷建议先导出成 PDF。</span></p>
@@ -6827,6 +6833,10 @@ async function openUpload() {
     <div id="up-list"></div>
     <div class="field" style="margin-top:12px"><label>课程标题（留空则用第一个文件名）</label>
       <input type="text" id="up-title" placeholder="如：生理学 第3章 代谢" style="width:100%"></div>
+    <div class="field"><label class="sub">放进哪个文件夹</label>
+      <select id="up-folder" class="search-select" style="width:100%"></select>
+      <div class="hint">上传后这些课程直接归类；留「未分类」也行，之后可在课程列表里批量移动。</div>
+    </div>
     <div class="field"><label>补充说明（可选）</label>
       <textarea id="up-brief" rows="3" placeholder="如：本部分对应教材第3章，重点讲代谢调控；第10-15页是考点" style="width:100%;resize:vertical;font-family:inherit"></textarea>
       <div class="hint">会交给 AI 作为范围/侧重参考，同时显示在课程页。</div></div>
@@ -6884,6 +6894,33 @@ async function openUpload() {
       renderList();
     }));
   };
+  // Fill the folder picker and remember the last destination.
+  {
+    const sel = $("#up-folder");
+    if (sel) {
+      sel.innerHTML = `<option value="">📁 未分类</option>`
+        + upFolders.map((f) => `<option value="${f.id}">📁 ${escapeHtml(f.name)}</option>`).join("")
+        + `<option value="__new__">＋ 新建文件夹…</option>`;
+      let last = "";
+      try { last = localStorage.getItem("mbbs_up_folder") || ""; } catch { /* ignore */ }
+      if (last && upFolders.some((f) => f.id === last)) sel.value = last;
+    }
+  }
+  // Turn the picker into a folder id, creating the folder when asked for a new one.
+  const resolveUploadFolder = async () => {
+    const sel = $("#up-folder");
+    let v = sel ? sel.value : "";
+    if (v === "__new__") {
+      const name = (typeof prompt === "function" ? prompt("新文件夹名") : "") || "";
+      if (!name.trim()) return "";
+      const rec = { id: uid(), name: name.trim(), createdAt: Date.now() };
+      await db.put("folders", rec);
+      v = rec.id;
+    }
+    try { localStorage.setItem("mbbs_up_folder", v || ""); } catch { /* ignore */ }
+    return v;
+  };
+
   const addFiles = (files) => {
     const oversize = [];
     for (const f of files) {
@@ -6950,6 +6987,7 @@ async function openUpload() {
     if (uploading) return;
     if (!picked.length) { toast("请先选择文件", "error"); return; }
     uploading = true;
+    pendingUploadFolderId = await resolveUploadFolder();
     const btn = $("#up-go");
     const original = btn.textContent;
     btn.disabled = true;
@@ -7147,6 +7185,8 @@ async function saveParsedLesson(res, filename, silent = false, autoGen = false, 
   // Student-supplied context: shown on the lesson page and fed to the AI as
   // scope/emphasis guidance. `sources` records the merged files.
   if (opts.brief) lesson.brief = opts.brief;
+  const destFolder = opts.folderId || pendingUploadFolderId;
+  if (destFolder && destFolder !== "__none__") lesson.folderId = destFolder;
   if (opts.pageRange) lesson.pageRange = opts.pageRange;
   if (Array.isArray(opts.sources) && opts.sources.length > 1) lesson.sources = opts.sources;
   // Media the parser could not turn into anything a browser can draw (vector

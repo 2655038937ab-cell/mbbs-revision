@@ -701,6 +701,10 @@ def slim_quiz(rec):
         "completed": rec.get("completed"),
         "lastTaken": rec.get("lastTaken"),
         "questionCount": len(rec.get("questions") or []),
+        # How many questions were actually answered: the lesson card's bar paints the
+        # wrong ones red and leaves the untouched ones blank, and a list page cannot
+        # count that from questions it no longer carries.
+        "answeredCount": sum(1 for a in (rec.get("userAnswers") or []) if a is not None),
     }
 
 

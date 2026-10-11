@@ -2928,16 +2928,20 @@ function feynmanPct(stage) {
  * The percentage pill next to it keeps its own meaning (best score ÷ bank size). */
 function quizResultBar(l) {
   const total = Number(l.quizTotal) || 0;
-  if (!l.quizTaken || !total) {
-    return `<div class="progress-bar" style="height:6px;margin-top:8px" title="还没做过这门课的测验"></div>`;
+  if (!total) {
+    return `<div class="progress-bar" style="height:6px;margin-top:8px" title="这门课还没有题库"></div>`;
   }
   const right = Math.max(0, Math.min(total, Number(l.quizRight) || 0));
+  const answered = Math.max(right, Math.min(total, Number(l.quizAnswered) || 0));
+  const wrong = answered - right;
   const okPct = (right / total) * 100;
-  const badPct = 100 - okPct;
-  return `<div class="progress-bar" style="height:6px;margin-top:8px;display:flex;overflow:hidden"
-      title="绿色 ${right}/${total} 答对 · 红色 ${total - right} 答错或未答对">
+  const badPct = (wrong / total) * 100;
+  const blankPct = Math.max(0, 100 - okPct - badPct);
+  return `<div class="progress-bar" style="height:6px;margin-top:8px;display:flex;overflow:hidden;background:#f1f5f9;border:1px solid var(--border)"
+      title="绿 ${right} 答对 · 红 ${wrong} 答错 · 空白 ${total - answered} 还没做">
       <div style="width:${okPct}%;background:#16a34a"></div>
       <div style="width:${badPct}%;background:#dc2626"></div>
+      <div style="width:${blankPct}%;background:transparent"></div>
     </div>`;
 }
 
@@ -2982,6 +2986,7 @@ function computeMasteryMap(lessons, cards, quizzes) {
       pointPct: pm.pointPct, reviewedPoints: pm.reviewed, totalPoints: pm.total,
       // 红绿进度条要用的：是否做过测验、答对几题、题库总数
       quizTaken: quizPct != null, quizRight: q ? (q.score ?? 0) : 0, quizTotal: qTotal,
+      quizAnswered: q ? (q.answeredCount ?? (q.userAnswers || []).filter((x) => x != null).length) : 0,
       hasPoints: (l.points || []).length > 0, hasCards: lc.length > 0, hasQuiz: quizPct != null,
       pct: quizPct == null ? 0 : Math.round(quizPct),
     };
@@ -3270,7 +3275,7 @@ async function renderDashboard() {
   const totalPoints = lessons.reduce((a, l) => a + (l.points?.length || 0), 0);
   const mastery = computeMasteryMap(lessons, cards, quizzes);
   const lessonsWith = withStats(lessons, cards).map((l) => ({ ...l, pct: mastery[l.id]?.pct ?? 0,
-    quizTaken: mastery[l.id]?.quizTaken, quizRight: mastery[l.id]?.quizRight, quizTotal: mastery[l.id]?.quizTotal }));
+    quizTaken: mastery[l.id]?.quizTaken, quizRight: mastery[l.id]?.quizRight, quizTotal: mastery[l.id]?.quizTotal, quizAnswered: mastery[l.id]?.quizAnswered }));
   const t = computeTimeStats(log);
   const goalMin = getGoalMinutes();
   const goalPct = Math.min(100, Math.round((t.todaySec / (goalMin * 60)) * 100));
@@ -3585,7 +3590,7 @@ async function renderLessons() {
   currentFolders = folders || [];
   const mastery = computeMasteryMap(lessons, cards, quizzes);
   let lessonsWith = withStats(lessons, cards).map((l) => ({ ...l, pct: mastery[l.id]?.pct ?? 0,
-    quizTaken: mastery[l.id]?.quizTaken, quizRight: mastery[l.id]?.quizRight, quizTotal: mastery[l.id]?.quizTotal }));
+    quizTaken: mastery[l.id]?.quizTaken, quizRight: mastery[l.id]?.quizRight, quizTotal: mastery[l.id]?.quizTotal, quizAnswered: mastery[l.id]?.quizAnswered }));
   // Active folder filter ("" all, "__none__" unfiled, else a folder id).
   if (lessonsFolderFilter === "__none__") lessonsWith = lessonsWith.filter((l) => !l.folderId);
   else if (lessonsFolderFilter) lessonsWith = lessonsWith.filter((l) => l.folderId === lessonsFolderFilter);

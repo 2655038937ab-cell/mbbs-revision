@@ -236,15 +236,20 @@ function setCloze(mark, hidden) {
  * The cloze above only blanks the model's own keyTerms. This lets the student
  * blank exactly the text they select.
  *
- * Storage: `point.masks = ["原文片段", ...]` — plain rendered text, never HTML —
- * written back through the normal lesson PUT (db.put("lessons", lesson)).
+ * Storage: `point.masks = [{ t: "原文片段", n: 0 }, ...]` — plain rendered text,
+ * never HTML — written back through the normal lesson PUT (db.put("lessons", lesson)).
+ * `n` says *which* occurrence of `t` this mask means (0-based) in the rendered
+ * text of the point, so two identical words in one point ("…地高辛…地高辛…") stay
+ * distinguishable: masking the second one stores n = 1. Older records that are
+ * bare strings are read as n = 0, i.e. exactly the old "first match" behaviour.
  *
  * Re-finding a fragment: the body is md-rendered, so a string replace on the
  * markdown source would cut through tags. A TreeWalker walks the text nodes of
- * the rendered body instead, finds the fragment in the container's *flat* text
- * and wraps every covered text node in its own `.kp-manual-mask` span. One mask
- * can therefore be several spans (a selection may cross <strong>/<li> edges);
- * they share data-key/data-i and are revealed or removed as a group.
+ * the rendered body instead, finds the fragment's occurrence in the container's
+ * *flat* text and wraps every covered text node in its own `.kp-manual-mask`
+ * span. One mask can therefore be several spans (a selection may cross
+ * <strong>/<li> edges); they share data-key/data-i and are revealed or removed as
+ * a group.
  *
  * While hidden, the original characters are kept out of the DOM (only in
  * data-text): the blocks are painted by `.kp-mask-t::before` and the × by
@@ -258,6 +263,112 @@ function setCloze(mark, hidden) {
 const manualMaskRevealed = new Set(); // "lessonId:idx:i" — reveal is session-only
 
 function maskKey(lessonId, idx) { return String(lessonId) + ":" + Number(idx); }
+
+// A stored mask is either the legacy bare string ("原文", meaning the first
+// occurrence) or the addressable shape { t: "原文", n: 第几处 }. Everything below
+// reads masks through these two so both shapes keep working.
+function maskText(m) {
+  if (typeof m === "string") return m;
+  return m && m.t != null ? String(m.t) : "";
+}
+function maskIndexOf(m) {
+  if (typeof m === "string" || !m) return 0;
+  const n = Number(m.n);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+// Start index of the n-th (0-based, non-overlapping) occurrence of `text`, or -1.
+function nthMatchIndex(flat, text, n) {
+  if (!text || !flat) return -1;
+  const want = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  let at = -1;
+  let from = 0;
+  for (let k = 0; k <= want; k++) {
+    at = flat.indexOf(text, from);
+    if (at < 0) return -1;
+    from = at + text.length;
+  }
+  return at;
+}
+
+// How many occurrences of `text` start before `before` — i.e. the n this
+// selection should be stored under when `text` begins at `before`.
+function countMatchesBefore(flat, text, before) {
+  if (!text || !flat) return 0;
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const at = flat.indexOf(text, from);
+    if (at < 0 || at >= before) return count;
+    count++;
+    from = at + text.length;
+  }
+}
+
+// The point body's text as the masks see it: a masked span (its characters live
+// in data-text while hidden) counts as its original text, so the occurrence
+// arithmetic stays the same whether or not other masks are currently applied.
+function maskSourceParts(root) {
+  const parts = [];
+  const visit = (el) => {
+    for (const child of el.childNodes) {
+      if (child.nodeType === 3) {
+        if (!child.nodeValue) continue;
+        const p = child.parentElement;
+        if (p && p.closest("button, textarea, input, select")) continue;
+        parts.push({ anchor: child, text: child.nodeValue });
+      } else if (child.nodeType === 1) {
+        const c = child;
+        if (c.classList && c.classList.contains("kp-manual-mask")) {
+          parts.push({ anchor: c, text: c.dataset.text || "" });
+          continue;
+        }
+        if (c.classList && c.classList.contains("katex")) continue;
+        if (c.closest && c.closest("button, textarea, input, select")) continue;
+        visit(c);
+      }
+    }
+  };
+  if (root) visit(root);
+  return parts;
+}
+
+// Character offset of (container, offset) inside maskSourceParts' flat text.
+function maskSourceOffset(root, container, offset) {
+  const parts = maskSourceParts(root);
+  const probe = document.createRange();
+  try { probe.setStart(container, offset); probe.collapse(true); } catch { return null; }
+  let cur = 0;
+  for (const p of parts) {
+    if (p.anchor === container) return cur + offset;
+    let cp = -1;
+    try { cp = probe.comparePoint(p.anchor, 0); } catch { cp = -1; }
+    if (cp >= 0) return cur;   // this part starts at or after the selection
+    cur += p.text.length;
+  }
+  return cur;
+}
+
+// Which occurrence of `text` the user just selected inside `body` (0 = first).
+function selectionMaskIndex(range, body, text) {
+  if (!range || !text) return 0;
+  const flat = maskSourceParts(body).map((p) => p.text).join("");
+  let start = maskSourceOffset(body, range.startContainer, range.startOffset);
+  if (start == null) return 0;
+  if (!flat.startsWith(text, start)) {
+    // The captured text is trimmed / restricted to maskable nodes, so it can
+    // start a little to the right of the raw selection start.
+    let j = start;
+    while (j < flat.length && /\s/.test(flat[j])) j++;
+    if (flat.startsWith(text, j)) start = j;
+    else {
+      const found = flat.indexOf(text, start);
+      if (found < 0) return 0;
+      start = found;
+    }
+  }
+  return countMatchesBefore(flat, text, start);
+}
 
 // Text nodes a mask may live in. Formulas are skipped: KaTeX lays each symbol out
 // twice (MathML + HTML), so wrapping its text nodes corrupts the formula and its
@@ -317,18 +428,34 @@ function maskSelectionText(range, body) {
 // actually re-found (a fragment whose text disappeared is skipped).
 function applyManualMasks(body, masks, key) {
   if (!body) return 0;
-  const list = (Array.isArray(masks) ? masks : []).map((s) => String(s == null ? "" : s)).filter((s) => s.trim());
+  // Idempotent: always re-apply onto the plain text, never onto a previous pass.
+  stripManualMasks(body);
+  const list = (Array.isArray(masks) ? masks : [])
+    .map((m) => ({ text: maskText(m), occ: maskIndexOf(m) }))
+    .filter((m) => m.text && m.text.trim());
   if (!list.length) return 0;
-  let applied = 0;
-  list.forEach((text, i) => {
-    // Re-walk per fragment: the previous mask has already restructured the DOM,
-    // so stale text-node references and a stale flat string would map the next
-    // fragment onto the wrong characters.
-    const nodes = maskableTextNodes(body);
-    if (!nodes.length) return;
-    const flat = nodes.map((n) => n.nodeValue).join("");
-    const at = flat.indexOf(text);
+  // Resolve every mask to a character range in the plain flat text first, then
+  // wrap from the last range back to the first. Removing a later fragment can
+  // never shift the offsets of an earlier one, so n = 1 really lands on the 2nd
+  // occurrence of a repeated word (the old code always wrapped the 1st).
+  const flat0 = maskableTextNodes(body).map((n) => n.nodeValue).join("");
+  const targets = [];
+  const seen = new Set();
+  list.forEach((m, i) => {
+    const at = nthMatchIndex(flat0, m.text, m.occ);
     if (at < 0) return;
+    const sig = at + "|" + m.text;
+    if (seen.has(sig)) return;   // two masks resolving to the same spot
+    seen.add(sig);
+    targets.push({ at, text: m.text, i });
+  });
+  targets.sort((a, b) => b.at - a.at);
+  let applied = 0;
+  targets.forEach(({ at, text, i }) => {
+    // Re-walk per fragment: the previous mask has already restructured the DOM,
+    // so stale text-node references would map the next fragment onto the wrong
+    // characters. `at` stays valid because every wrap so far was further right.
+    const nodes = maskableTextNodes(body);
     const end = at + text.length;
     let cursor = 0;
     const hits = [];
@@ -445,7 +572,19 @@ async function saveManualMasks(lessonId, idx, masks) {
     toast("找不到这条知识点，遮字没有保存", "error");
     return false;
   }
-  const clean = (masks || []).map((s) => String(s == null ? "" : s)).filter((s) => s.trim());
+  // Accept both shapes here (legacy bare strings and { t, n }) and always write
+  // the addressable one; drop blanks and exact (text, n) duplicates.
+  const clean = [];
+  const seen = new Set();
+  (masks || []).forEach((m) => {
+    const t = maskText(m);
+    if (!t || !t.trim()) return;
+    const n = maskIndexOf(m);
+    const sig = t + "\u0000" + n;
+    if (seen.has(sig)) return;
+    seen.add(sig);
+    clean.push({ t, n });
+  });
   const point = lesson.points[idx];
   if (clean.length) point.masks = clean;
   else delete point.masks;
@@ -557,7 +696,7 @@ async function clearManualMasks(lessonId, idx) {
 }
 
 // ---- The floating "✍️ 遮住选中" button ----
-let maskSel = null;      // { text, target } captured at selection time
+let maskSel = null;      // { text, n, target } captured at selection time
 let maskBtnEl = null;
 let maskBtnTimer = null;
 
@@ -590,7 +729,7 @@ function updateMaskBtn() {
   const picked = maskSelectionText(range, target.body);
   if (!picked) { hideMaskBtn(); return; }
   const btn = maskFloatBtn();
-  maskSel = { text: picked.text, target };
+  maskSel = { text: picked.text, n: selectionMaskIndex(range, target.body, picked.text), target };
   btn.hidden = false;
   const r = range.getBoundingClientRect();
   const w = btn.offsetWidth || 130;
@@ -606,14 +745,20 @@ async function commitMaskSelection() {
   hideMaskBtn();
   if (!snap) return;
   const { text, target } = snap;
+  const n = Number.isFinite(snap.n) && snap.n > 0 ? Math.floor(snap.n) : 0;
   // Drop the browser selection so the button does not immediately pop back up
   // over the text we just masked.
   try { const s = window.getSelection(); if (s) s.removeAllRanges(); } catch { /* none */ }
   const lesson = fullLessonCache.get(target.lessonId) || await getLessonFull(target.lessonId).catch(() => null);
   const point = lesson && (lesson.points || [])[target.idx];
   const masks = Array.isArray(point && point.masks) ? point.masks.slice() : [];
-  if (masks.includes(text)) { toast("这段文字已经遮住了", "warn"); return; }
-  masks.push(text);
+  // Same text at the same occurrence is already masked; the same text elsewhere
+  // in the point is a new, legitimate mask.
+  if (masks.some((m) => maskText(m) === text && maskIndexOf(m) === n)) {
+    toast(n ? `这段文字（第 ${n + 1} 处）已经遮住了` : "这段文字已经遮住了", "warn");
+    return;
+  }
+  masks.push({ t: text, n });
   if (await saveManualMasks(target.lessonId, target.idx, masks)) {
     toast(`已遮住 ${text.length} 个字 ✓`, "success");
   }

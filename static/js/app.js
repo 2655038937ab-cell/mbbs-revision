@@ -4408,12 +4408,16 @@ async function renderLessonDetailBody() {
   if (!lesson) { navigate("lessons"); return; }
   // Restore the per-point English choices once per lesson per session.
   if (!enViewLoaded.has(lesson.id)) { enViewLoaded.add(lesson.id); loadEnView(lesson.id); }
-  const [cards, quizRecs] = await Promise.all([
+  const [cards, quizRecs, , formulaDocs] = await Promise.all([
     db.getAllByIndex("cards", "lessonId", currentLessonId),
     db.getAllByIndex("quizzes", "lessonId", currentLessonId),
     loadFavs(), // the star state renders synchronously, so favourites must be in hand
+    db.getAll("formulas").catch(() => []),
   ]);
   const quiz = latestQuiz(quizRecs);
+  // This course's formulas, resolved against its CURRENT knowledge points. Same
+  // helper the library uses for its per-chapter count, so 课内数字 == 库页数字.
+  const courseFormulas = formulasForLesson(formulaDocs, lesson);
 
   // Build the ordered lesson list once for quick prev/next switching. Use the
   // same "course code" grouping the Lessons list shows, so ◀ ▶ follow the order
@@ -4429,7 +4433,9 @@ async function renderLessonDetailBody() {
 
   const tabs = [
     ...(lesson.paper ? [["paper", "📝 试卷"]] : []),
-    ["points", "✨ 知识点"], ["cards", "🃏 闪卡"], ["quiz", "📝 题目"], ["mindmap", "🗺 思维导图"], ["figures", "🖼 配图"], ["slides", "📄 原课件"],
+    ["points", "✨ 知识点"], ["cards", "🃏 闪卡"], ["quiz", "📝 题目"],
+    ["formulas", `📐 公式${courseFormulas.length ? ` (${courseFormulas.length})` : ""}`],
+    ["mindmap", "🗺 思维导图"], ["figures", "🖼 配图"], ["slides", "📄 原课件"],
   ];
   const isImmersive = immersiveOn && currentTab === "points";
 
@@ -4544,7 +4550,7 @@ async function renderLessonDetailBody() {
   const editBrief = $("#btn-edit-brief");
   if (editBrief) editBrief.addEventListener("click", () => openBriefEditor(lesson));
   $("#btn-del").addEventListener("click", () => deleteLesson(currentLessonId));
-  renderTabBody(lesson, cards, quiz);
+  renderTabBody(lesson, cards, quiz, { formulas: courseFormulas, docs: formulaDocs });
 }
 
 function renderImmersivePoints(lesson) {
@@ -4791,7 +4797,7 @@ async function exportLessonPdf(lessonId) {
   }
 }
 
-async function renderTabBody(lesson, cards, quiz) {
+async function renderTabBody(lesson, cards, quiz, extra = {}) {
   // Release the cards-browse keyboard handler from the previous tab render.
   if (cardsKbHandler) { document.removeEventListener("keydown", cardsKbHandler); cardsKbHandler = null; }
   // Leaving the quiz tab ends preview mode: otherwise its ←/→ handler would keep
@@ -4810,9 +4816,88 @@ async function renderTabBody(lesson, cards, quiz) {
   else if (currentTab === "points") renderPointsTab(body, lesson);
   else if (currentTab === "cards") renderCardsTab(body, lesson, cards);
   else if (currentTab === "quiz") renderQuizTab(body, lesson, quiz);
+  else if (currentTab === "formulas") await renderLessonFormulasTab(body, lesson, extra.formulas || [], extra.docs || []);
   else if (currentTab === "mindmap") renderMindmapTab(body, lesson);
   else if (currentTab === "figures") renderFiguresTab(body, lesson);
   else if (currentTab === "slides") renderSlidesTab(body, lesson);
+}
+
+/* The course's own formula tab.
+ *
+ * The library was the only place a formula could be read, so "this chapter's
+ * formulas" meant scrolling the whole subject and reading the chapter badge on
+ * every card. The tab shows exactly the cards of THIS course — the same renderer,
+ * the same numbers as the library's chapter section — and when there are none yet
+ * it says what to click and what that click will actually do (extraction is
+ * per-subject: one run covers every course of the subject).
+ */
+async function renderLessonFormulasTab(body, lesson, list, docs) {
+  const subj = subjectForLesson(lesson);
+  const doc = (docs || []).find((d) => d && d.subjectId === subj.id) || null;
+  // The plan is subject-wide, because that is the unit the extraction runs in. It
+  // needs the other courses' points, so the full list is fetched only when this tab
+  // is actually opened (the lesson list elsewhere stays on the lite payload).
+  const allFull = await db.getAll("lessons").catch(() => []);
+  const subjLessons = subjectLessonData(allFull, subj.id);
+  const plan = formulaBatchPlan(subjLessons, doc);
+  const action = formulaActionFor(subj.id, plan, doc);
+  const mathItems = list.filter((f) => !isReactionEntry(f));
+  const chemItems = list.filter(isReactionEntry);
+  const isDead = lesson.subjectId && !subjectById(lesson.subjectId);
+  // Formulas stored for this course whose recorded source point no longer exists:
+  // they are listed under the library's 「未归类」 bucket, and the count is stated here
+  // so the course's own total never looks like it lost content.
+  let lostCount = 0;
+  for (const d of (docs || [])) {
+    for (const f of (d && d.formulas) || []) {
+      if (f && f.src && f.src.lessonId === lesson.id && !resolveFormulaSrc(f, lesson)) lostCount++;
+    }
+  }
+  if (currentTab !== "formulas") return;   // the reader already moved on
+
+  body.innerHTML = `
+    <div class="card" style="margin-bottom:14px${list.length ? "" : ";background:var(--surface-2)"}">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <b>📐 这门课的公式${list.length ? `（${list.length} 个）` : ""}</b>
+        <span class="sub">属于「${escapeHtml(subj.name)}」学科 —— 公式按学科提取，一次会扫描该学科所有课程的知识点。</span>
+        <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">${action.html || ""}</div>
+      </div>
+      ${list.length ? "" : `<div class="sub" style="margin-top:8px">这门课还没有公式。${plan.ready.length ? "点右上角按钮，AI 会从本学科的知识点里整理出公式、符号、适用条件和例题。" : "先给这门课生成知识点，再回来提取公式。"}</div>`}
+      ${action.hint ? `<div class="sub" style="margin-top:8px;font-size:12.5px;color:${action.hintLevel === "warn" ? "var(--amber,#b45309)" : "var(--text-dim,#6b7280)"}">${action.hintLevel === "warn" ? "⚠️ " : "ℹ️ "}${action.hint}</div>` : ""}
+      ${lostCount ? `<div class="sub" style="margin-top:8px;font-size:12.5px">ℹ️ 另有 ${lostCount} 条从本课提取的公式，其记录的来源知识点已被重新生成或改名，无法定位来源——它们列在公式库页面底部的「未归类」里（卡片上标了原属课程）。</div>` : ""}
+      ${isDead ? `<div class="sub" style="margin-top:8px;font-size:12.5px;color:var(--amber,#b45309)">⚠️ 这门课手选的学科「${escapeHtml(lesson.subjectId)}」已不在学科预设里，公式库页会把它的公式放进「未归类」。改学科请用上面的下拉框。</div>` : ""}
+    </div>
+    ${list.length ? `
+      <div class="formula-body">
+        ${mathItems.length ? `<div data-formula-grid data-nogroup="1">${mathItems.map((f, i) => formulaCard(f, i, subj.id, "")).join("")}</div>`
+          : `<div class="sub">这门课目前只有化学式，没有可计算的公式——见下方「化学反应式」。</div>`}
+        ${chemItems.length ? `<details class="chem-block" style="margin-top:16px" open>
+          <summary class="sub" style="cursor:pointer;font-weight:600;padding:9px 12px;background:var(--surface);border-radius:8px">⚗️ 化学反应式与转运化学计量（${chemItems.length} 条）</summary>
+          <div class="chem-body" style="margin-top:10px" data-formula-grid data-nogroup="1">${chemItems.map((f, i) => formulaCard(f, i, subj.id, "")).join("")}</div>
+        </details>` : ""}
+      </div>` : ""}`;
+
+  // Same jump + flashcard behaviour as the library, scoped to this tab.
+  body.querySelectorAll("[data-src-lesson]").forEach((b) => b.addEventListener("click", () => {
+    openPoint(b.dataset.srcLesson, Number(b.dataset.srcIdx) || 0);
+  }));
+  body.querySelectorAll("[data-make-card]").forEach((b) => b.addEventListener("click", async () => {
+    const key = b.dataset.cardKey || "";
+    let f = null;
+    for (const d of (docs || [])) { f = (d.formulas || []).find((x) => formulaKey(x.latex) === key) || null; if (f) break; }
+    if (!f) return;
+    const existing = (await db.getAll("cards").catch(() => [])) || [];
+    const front = formulaCardFront(f);
+    if (existing.some((c) => c && c.front === front)) {
+      b.textContent = "✅ 已在复习队列"; b.disabled = true;
+      toast("这张闪卡已经在复习队列里了", "");
+      return;
+    }
+    await db.bulkPut("cards", [newCard({ lessonId: lesson.id, front, back: formulaCardBack(f), source: "公式库" })]);
+    b.textContent = "✅ 已加入复习"; b.disabled = true;
+    toast("已加入闪卡队列 —— 以后按间隔重复出现，直到你回想得出来", "success");
+  }));
+  bindFormulaGenButtons(body, () => renderLessonDetail({ resetScroll: false }));
 }
 
 // Reading order for the key-points tab: "topic" (the three-level theme tree) or
@@ -10187,6 +10272,234 @@ function lessonsFullyDone(lessons, chunks, chunkIds, doneSet) {
   return out;
 }
 
+/* ---------------- Which batches actually still need extracting ----------------
+ *
+ * doneChunks used to be the only record of "this batch has been scanned", and a
+ * batch is identified by a hash of its own contents (lessonId#idx#point title for
+ * every point in it). Any edit upstream of a batch — a new chapter inserted, a
+ * point added, deduped or renamed — shifts every later chunk boundary, so every id
+ * changes and the old ids stay in the document forever. The library then reported
+ * "还有 14/14 批没有提取成功" for a subject holding 192 formulas, and the "补齐 N 批"
+ * button re-sent the whole subject (14 batches) to fix one new chapter.
+ *
+ * The durable signal is the one the extraction itself already maintains:
+ * doc.lessonIds only ever receives lessons whose every batch came back, and
+ * lesson.updatedAt is bumped whenever the lesson's points change. So a course is
+ * "already scanned and still current" when it is in lessonIds and has not been
+ * touched since generatedAt — and a batch is only outstanding when it covers a
+ * course that is new, or has changed, or whose earlier scan failed.
+ */
+function lessonFormulaFresh(lesson, doc) {
+  if (!doc || !lesson) return false;
+  if (!(doc.lessonIds || []).includes(lesson.id)) return false;
+  const gen = doc.generatedAt || 0;
+  return (lesson.updatedAt || lesson.createdAt || 0) <= gen;
+}
+
+function formulaBatchPlan(lessonsWithPoints, doc) {
+  const ready = (lessonsWithPoints || []).filter((l) => (l.points || []).length);
+  const entries = subjectPointNotes(ready);
+  const chunks = chunkEntries(entries);
+  const ids = chunks.map((c) => chunkId(c));
+  const fresh = new Set();
+  for (const l of ready) if (lessonFormulaFresh(l, doc)) fresh.add(l.id);
+  const doneIds = new Set();
+  chunks.forEach((c, i) => { if (c.every((e) => fresh.has(e.lessonId))) doneIds.add(ids[i]); });
+  return {
+    ready,
+    entries,
+    chunks,
+    ids,
+    fresh,
+    doneIds,
+    // The batches a "补齐" run will actually send, in order.
+    todo: chunks.map((_, i) => i).filter((i) => !doneIds.has(ids[i])),
+    // Lessons that are missing from the library entirely (never scanned, changed
+    // since the scan, or whose batch failed).
+    pendingLessons: ready.filter((l) => !fresh.has(l.id)),
+    total: chunks.length,
+  };
+}
+
+/* ---------------- Where a formula lives now ----------------
+ *
+ * f.src is a snapshot taken when the formula was extracted: the knowledge point's
+ * title and its index at that moment. Regenerating points renumbers them, so 164 of
+ * the 241 stored formulas pointed at the wrong row (or at no row): the "📖 来源知识
+ * 点" badge showed one title and jumped to another. Resolve the snapshot against the
+ * lesson's CURRENT points instead — exact title first, then the same normalisation
+ * pointForTitle uses, then containment — and only call the link lost when none of
+ * those match.
+ */
+function resolveFormulaSrc(f, lesson) {
+  if (!lesson) return null;
+  const pts = lesson.points || [];
+  const rec = (f && f.src) || {};
+  const want = String(rec.title || "").trim();
+  const recIdx = Number.isInteger(rec.idx) ? rec.idx : -1;
+  if (!want) return null;
+  const titleAt = (i) => String((pts[i] && pts[i].title) || "").trim();
+  // 1. the recorded index still holds the recorded point
+  if (recIdx >= 0 && recIdx < pts.length && titleAt(recIdx) === want) {
+    return { lessonId: lesson.id, idx: recIdx, title: want, exact: true, rematched: false };
+  }
+  // 2. the same title, at a different index (the common case after renumbering)
+  const exact = pts.findIndex((p) => String((p && p.title) || "").trim() === want);
+  if (exact >= 0) return { lessonId: lesson.id, idx: exact, title: want, exact: true, rematched: true };
+  // 3. normalised equality, then 4. containment — the same tiers the extractor used
+  const wantN = normPointTitle(want);
+  if (!wantN) return null;
+  let hit = -1;
+  for (let i = 0; i < pts.length; i++) {
+    if (normPointTitle(titleAt(i)) === wantN) { hit = i; break; }
+  }
+  if (hit < 0) {
+    for (let i = 0; i < pts.length; i++) {
+      const have = normPointTitle(titleAt(i));
+      if (have && (have.includes(wantN) || wantN.includes(have))) { hit = i; break; }
+    }
+  }
+  if (hit >= 0) return { lessonId: lesson.id, idx: hit, title: titleAt(hit), exact: false, rematched: true };
+  return null;   // the course is alive, this particular point is gone
+}
+
+// Every formula of ONE course, with src re-resolved against that course's current
+// points. The 课程页「公式」标签 and the library's per-chapter count both go through
+// this, so "课内公式数 == 库页该课公式数" holds by construction. Dedupe is per
+// lesson: the same relation extracted twice (before/after a re-classification) is
+// the same formula for this course, but two courses are counted separately.
+// A formula whose source point cannot be found any more is NOT part of this list:
+// it lives in the library's 「未归类」 bucket, and the two views stay in step.
+function formulasForLesson(docs, lesson) {
+  const out = [];
+  const seen = new Set();
+  if (!lesson) return out;
+  for (const d of (docs || [])) {
+    for (const f of (d && d.formulas) || []) {
+      const lid = f && f.src && f.src.lessonId;
+      if (lid !== lesson.id) continue;
+      const key = formulaKey(f.latex);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const src = resolveFormulaSrc(f, lesson);
+      if (!src) continue;
+      out.push({ ...f, lessonId: lesson.id, src, srcLost: false, docSubject: d.subjectId || "" });
+    }
+  }
+  return out;
+}
+
+// The whole library in one pass: formulas grouped by the course that produced them
+// (whatever subject that course is in NOW), plus an explicit bucket for the ones
+// that cannot be attributed any more. Nothing is dropped silently: a formula whose
+// course was deleted, or whose recorded source point no longer exists in the course,
+// lands in `unfiled` where the reader can see it, instead of vanishing because its
+// document's subject left the study profile — or being silently mixed into a subject
+// with a source badge that jumps somewhere unrelated.
+function buildFormulaIndex(allLessons, docs) {
+  const byLesson = new Map();
+  const unfiled = [];
+  const lessonById = new Map((allLessons || []).map((l) => [l.id, l]));
+  const seenUnfiled = new Set();
+  const pairs = new Set();
+  const pushUnfiled = (f, d, extra) => {
+    const key = formulaKey(f.latex);
+    if (seenUnfiled.has(key)) return;
+    seenUnfiled.add(key);
+    unfiled.push({
+      ...f, lessonId: null, src: null, srcLost: false,
+      docSubject: (d && d.subjectName) || (d && d.subjectId) || "",
+      ...extra,
+    });
+  };
+  for (const d of (docs || [])) {
+    for (const f of (d && d.formulas) || []) {
+      const lid = f && f.src && f.src.lessonId;
+      const lesson = lid ? lessonById.get(lid) : null;
+      if (!lesson) {
+        // The course is gone (or was never recorded): nothing can place this formula.
+        pushUnfiled(f, d, { originLessonTitle: "", originSubjectId: "" });
+        continue;
+      }
+      const src = resolveFormulaSrc(f, lesson);
+      if (!src) {
+        // The course is alive but the recorded point cannot be found in it any more
+        // (the points were regenerated or renamed). Keep it out of the subject table
+        // so the table never claims a source it cannot show, and label the card with
+        // the course it originally came from.
+        pushUnfiled(f, d, { originLessonTitle: lesson.title, originSubjectId: subjectForLesson(lesson).id });
+        continue;
+      }
+      const key = `${lesson.id}\u0000${formulaKey(f.latex)}`;
+      if (pairs.has(key)) continue;
+      pairs.add(key);
+      if (!byLesson.has(lesson.id)) byLesson.set(lesson.id, []);
+      byLesson.get(lesson.id).push({ ...f, lessonId: lesson.id, src, srcLost: false, docSubject: (d && d.subjectName) || (d && d.subjectId) || "" });
+    }
+  }
+  return { byLesson, unfiled, lessonById };
+}
+
+// The one place that decides what the "提取/补齐" button says, so the label, the
+// warning text next to it and the run itself can never disagree again.
+function formulaActionFor(subjectId, plan, doc) {
+  const sid = escapeHtml(subjectId);
+  if (!plan.ready.length) return { html: `<span class="sub">先给它下面的课生成知识点</span>` };
+  if (!doc) {
+    return {
+      html: `<button class="btn btn-accent btn-sm" data-gen-formula="${sid}">✨ 提取公式</button>`,
+      refreshLabel: "✨ 提取公式",
+      hint: `还没有提取过公式 —— 点「✨ 提取公式」开始（学科级：会扫描该学科 ${plan.ready.length} 门课、${plan.total} 个批次）。`,
+      hintLevel: "info",
+    };
+  }
+  if (plan.todo.length) {
+    const n = plan.pendingLessons.length;
+    const label = `补齐 ${plan.todo.length} 批`;
+    return {
+      html: `<button class="btn btn-accent btn-sm" data-gen-formula="${sid}" data-incremental="1">＋ ${label}${n ? `（${n} 门课）` : ""}</button>
+             <button class="btn btn-ghost btn-sm" data-gen-formula="${sid}">↻ 全部重提取</button>`,
+      refreshLabel: "↻ 全部重提取",
+      hint: `还有 ${plan.todo.length}/${plan.total} 个批次待提取${n ? `（${plan.pendingLessons.map((l) => l.title).join("、")}）` : ""} —— 点「＋ ${label}」只会重扫这些批次，已提取且没改过的 ${plan.total - plan.todo.length} 个批次不会重跑、也不会重复收费。`,
+      hintLevel: "warn",
+    };
+  }
+  const staleLabel = "↻ 升级重提取";
+  return {
+    html: `<button class="btn btn-ghost btn-sm" data-gen-formula="${sid}">${staleLabel}</button>`,
+    refreshLabel: staleLabel,
+    hint: "",
+  };
+}
+
+// Run an extraction and refresh whatever page asked for it.
+async function runFormulaExtraction(subjectId, incremental, after) {
+  const name = (subjectById(subjectId) || {}).name || subjectId;
+  if (!(await requireTextKey())) return;
+  const pm = progressPanel(`${name} · ${incremental ? "补齐待提取的课程" : "提取公式"}`);
+  const res = await generateSubjectFormulas(subjectId, pm, { incremental });
+  if (!res.ok) { pm.fail(res.reason); toast(res.reason, "error"); return; }
+  const done = () => { if (typeof after === "function") after(); };
+  if (res.hadError) {
+    // Say it plainly: the run finished but part of it produced nothing, and those
+    // chapters are still waiting. Staying quiet here is what hid a whole chapter.
+    pm.done(`${res.count} 个公式（有批次失败）`, "查看公式库", done);
+    toast("⚠️ 有批次没能解析出公式：本次结果已保留原库，失败的部分下次可以再试。", "error");
+    done();
+    return;
+  }
+  pm.done(`${res.count} 个公式${incremental ? `（新增 ${res.added}）` : ""}`, "查看公式库", done);
+  toast(incremental ? `✅ 新增 ${res.added} 个公式，共 ${res.count} 个` : `✅ 已整理 ${res.count} 个公式（含场景与例题）`, "success");
+  done();
+}
+
+// Bound per button, not delegated from #view: #view survives innerHTML
+// replacement, so a listener added there would stack up on every re-render.
+function bindFormulaGenButtons(scope, after) {
+  (scope || document).querySelectorAll("[data-gen-formula]").forEach((b) => b.addEventListener("click", () =>
+    runFormulaExtraction(b.dataset.genFormula, b.dataset.incremental === "1", after)));
+}
+
 // Shape one raw model record into the stored formula shape. `pointIndex` maps a
 // knowledge-point title to its lesson+index, turning the model's verbatim "point"
 // answer into a clickable source link.
@@ -10286,13 +10599,17 @@ async function generateSubjectFormulas(subjectId, pm, opts = {}) {
   // The unit of work is a BATCH, not a lesson. Batches are derived from every ready
   // lesson (so the set is stable between runs), and one that already came back is
   // skipped — a retry after a partial failure therefore costs only what was missing.
-  const entries = subjectPointNotes(ready);
-  const chunks = chunkEntries(entries);
-  const chunkIds = chunks.map((c) => chunkId(c));
+  // "Already came back" is judged by formulaBatchPlan (course coverage + updatedAt),
+  // NOT by the content hash: a new chapter shifts every later chunk id, which used
+  // to make the whole subject look unscanned and re-billed all of it.
+  const plan = formulaBatchPlan(ready, existing);
+  const entries = plan.entries;
+  const chunks = plan.chunks;
+  const chunkIds = plan.ids;
   const doneChunks = seedDoneChunks(chunks, chunkIds, existing);
-  const runIdx = chunks.map((_, i) => i).filter((i) => !opts.incremental || !doneChunks.has(chunkIds[i]));
+  const runIdx = opts.incremental ? plan.todo : chunks.map((_, i) => i);
   if (!runIdx.length) {
-    return { ok: false, reason: opts.incremental ? "没有新的批次需要提取（都已包含）" : "这个学科还没有生成过知识点" };
+    return { ok: false, reason: opts.incremental ? "没有需要补齐的批次（这个学科的知识点都已提取且没有改动）" : "这个学科还没有生成过知识点" };
   }
   // Title -> source point, so the model's verbatim "point" answer can be turned
   // back into a clickable jump to the knowledge point that explains the formula.
@@ -10382,6 +10699,13 @@ async function generateSubjectFormulas(subjectId, pm, opts = {}) {
     }
   }
   if (!merged.length) return { ok: false, reason: firstError || "没有识别到公式" };
+  // Keep the document from growing forever: an id only means anything while the
+  // current chunking still produces it, so ids left over from an earlier point set
+  // are dropped. The lesson list is pruned the same way — a course that has since
+  // been re-classified into another subject must not stay "covered" here, or that
+  // subject would never offer to extract it.
+  const liveChunkIds = new Set(chunkIds);
+  const here = new Set(lessons.map((l) => l.id));
   const doc = {
     id: subjectId,
     subjectId,
@@ -10390,10 +10714,10 @@ async function generateSubjectFormulas(subjectId, pm, opts = {}) {
     // Only lessons whose every batch is accounted for — NOT every lesson of the
     // subject. Using all lessons marked a chapter as done the moment it existed,
     // even when its scan had failed, so it could never be picked up again.
-    lessonIds: [...new Set([...covered, ...scannedIds])],
+    lessonIds: [...new Set([...scannedIds, ...[...covered].filter((id) => here.has(id))])],
     // Per-batch progress, so a retry re-sends only the batches that failed.
-    doneChunks: [...allDone],
-    lessons: [...new Set([...((existing && existing.lessons) || []), ...lessons.map((l) => l.title)])],
+    doneChunks: [...allDone].filter((id) => liveChunkIds.has(id)),
+    lessons: [...new Set([...lessons.map((l) => l.title)])],
     generatedAt: Date.now(),
     model: (appConfig && appConfig.text && appConfig.text.model) || "",
   };
@@ -10556,110 +10880,106 @@ async function renderFormulas() {
   // the document it happens to be stored in. Re-classifying a course (the subject
   // dropdown on the lesson page) must move its formulas with it — otherwise the
   // library keeps listing a course under a subject the course list no longer uses,
-  // and re-extracting just to fix a label would cost real tokens. A formula with no
-  // source lesson keeps its document's subject.
-  const subjectOfLesson = new Map();
-  for (const l of (allLessons || [])) subjectOfLesson.set(l.id, subjectForLesson(l).id);
-  const itemsBySubject = new Map();
-  const seenFormula = new Set();
-  for (const d of (docs || [])) {
-    for (const f of (d.formulas || [])) {
-      const lid = f.src && f.src.lessonId;
-      const sid = (lid && subjectOfLesson.get(lid)) || d.subjectId || "general";
-      // Two documents can hold the same formula (an extraction before and after a
-      // course changed subject), so collapse them per subject by LaTeX.
-      const key = `${sid}\u0000${formulaKey(f.latex)}`;
-      if (seenFormula.has(key)) continue;
-      seenFormula.add(key);
-      if (!itemsBySubject.has(sid)) itemsBySubject.set(sid, []);
-      itemsBySubject.get(sid).push(f);
-    }
-  }
-  // A formula answers "what do I compute"; the chapter answers "where does this
-  // belong in the course", which is how a student actually looks a formula up
-  // before an exam. Every formula already records the lesson it was extracted
-  // from, so the chapter is just that lesson's title.
+  // and re-extracting just to fix a label would cost real tokens.
+  // The index is shared with the 课程页「公式」标签, so the two can never disagree.
+  const idx = buildFormulaIndex(allLessons, docs);
   const lessonTitleById = new Map((allLessons || []).map((l) => [l.id, l.title]));
+
   const rows = prof.subjects.map((subj) => {
     const lessons = subjectLessonData(allLessons, subj.id);
     const withPoints = lessons.filter((l) => (l.points || []).length);
-    return { subj, lessons, withPoints, doc: docById.get(subj.id) || null };
-  }).filter((r) => r.lessons.length || r.doc || (itemsBySubject.get(r.subj.id) || []).length);
-  const formulasOf = (r) => itemsBySubject.get(r.subj.id) || [];
+    const doc = docById.get(subj.id) || null;
+    const items = [];
+    for (const l of lessons) { const got = idx.byLesson.get(l.id); if (got) items.push(...got); }
+    // Formulas extracted from this subject's courses whose source point no longer
+    // exists: they are listed under 「未归类」, and saying so here is what stops the
+    // subject count from looking simply wrong.
+    const movedOut = idx.unfiled.filter((f) => f.originSubjectId === subj.id).length;
+    return { subj, lessons, withPoints, doc, items, movedOut, plan: formulaBatchPlan(withPoints, doc) };
+  }).filter((r) => r.lessons.length || r.doc || r.items.length);
+  // Formulas whose course no longer exists (or which never recorded one) used to be
+  // filed under whatever subject their document had — or to vanish outright when that
+  // subject left the study profile. They get their own bucket instead.
+  if (idx.unfiled.length) {
+    rows.push({
+      unfiled: true,
+      subj: { id: "__unfiled__", name: "未归类" },
+      lessons: [], withPoints: [], doc: null, items: idx.unfiled,
+      plan: { ready: [], todo: [], total: 0, pendingLessons: [] },
+    });
+  }
+  const formulasOf = (r) => r.items;
   const totalFormulas = rows.reduce((n, r) => n + formulasOf(r).length, 0);
   const totalChem = rows.reduce((n, r) => n + formulasOf(r).filter(isReactionEntry).length, 0);
   const totalMath = totalFormulas - totalChem;
   // Folded subjects are remembered per browser, the same way the per-point English
   // toggle is: hiding a subject is a reading preference, not a one-off click.
   const collapsedSubjects = new Set(loadFoldedSubjects());
-  const foldable = rows.filter((r) => formulasOf(r).length).length;
+  const foldable = rows.filter((r) => !r.unfiled && formulasOf(r).length).length;
   // Chapter grouping is a reading preference, so it is remembered like the fold.
   const groupMode = formulaGroupMode();
   const groupable = rows.some((r) => {
     const items = formulasOf(r);
-    return new Set(items.map((f) => (f.src && f.src.lessonId) || "")).size > 1;
+    return new Set(items.map((f) => f.lessonId || "")).size > 1;
   });
 
   const cards = rows.map((r) => {
     const doc = r.doc;
     const items = formulasOf(r);
-    // Lessons with points that are not yet folded into this subject's library:
-    // the signal that a freshly uploaded chapter still needs extracting.
-    const covered = new Set((doc && doc.lessonIds) || []);
-    const pending = r.withPoints.filter((l) => !covered.has(l.id));
+    // The batches a "补齐" run will really send, and the courses that are new or have
+    // changed since the last scan. Exactly the computation the extraction itself uses,
+    // so the number on the button is the number of requests that will go out.
+    const plan = r.plan;
+    const action = r.unfiled ? { html: "" } : formulaActionFor(r.subj.id, plan, doc);
     // Chapters this subject draws formulas from, with an inline rename: the title
     // came from the uploaded file name, and it is what the badges below show.
     const chapterIds = new Map();
     for (const l of r.withPoints) chapterIds.set(l.title, l.id);
-    const chapters = [...new Set(items.map((f) => f.src && f.src.lessonId ? (lessonTitleById.get(f.src.lessonId) || "") : "").filter(Boolean))];
+    const chapters = [...new Set(items.map((f) => (f.lessonId && lessonTitleById.get(f.lessonId)) || "").filter(Boolean))];
+    // Which chapter a formula belongs to: the course it was extracted from. A formula
+    // whose recorded point is gone still belongs to its course — only its source link
+    // is dead, and the card itself says so.
+    const chapterOf = (f) => (f.lessonId && lessonTitleById.get(f.lessonId)) || "";
     // The fallback subject earns a word of explanation: a lesson lands here when its
     // title matches no keyword, which otherwise looks like a formula-library bug.
-    const isGeneral = ((subjectById("general") || {}).id || "general") === r.subj.id;
-    // How many BATCHES are still outstanding, computed the same way the extraction
-    // itself decides what to send — so the number shown is the number that will run.
-    const allChunks = chunkEntries(subjectPointNotes(r.withPoints));
-    const allChunkIds = allChunks.map((c) => chunkId(c));
-    const doneSet = seedDoneChunks(allChunks, allChunkIds, doc);
-    const remaining = allChunks.filter((c, i) => !doneSet.has(allChunkIds[i])).length;
-    // Formulas written by an older prompt have no 常用场景 and no example
-    // commentary. Nothing tells the user that, and incremental extraction can
-    // never reach them (their lessons are already "covered"), so the library
-    // silently stays on the old, weaker format. Count them and say so.
+    const isGeneral = !r.unfiled && (((subjectById("general") || {}).id || "general") === r.subj.id);
+    // Formulas written by an older prompt have no 常用场景 and no example commentary.
+    // Incremental extraction cannot reach them (their courses count as scanned), so
+    // say how many there are — and name a button that is actually on this page.
     const stale = items.filter((f) => !f.scenarios || !(f.examples || []).length || (f.examples || []).some((e) => !e.why)).length;
-    // Which chapter a formula belongs to: the lesson it was extracted from. With
-    // no source point there is no lessonId, so fall back to the subject's only
-    // lesson if there is exactly one — with several, guessing would be wrong.
-    const chapterOf = (f) => {
-      const fromSrc = f.src && lessonTitleById.get(f.src.lessonId);
-      if (fromSrc) return fromSrc;
-      return r.withPoints.length === 1 ? r.withPoints[0].title : "";
-    };
-    const btn = !r.withPoints.length
-      ? `<span class="sub">先给它下面的课生成知识点</span>`
-      : (!doc
-        ? `<button class="btn btn-accent btn-sm" data-gen-formula="${escapeHtml(r.subj.id)}">✨ 提取公式</button>`
-        : (remaining
-          ? `<button class="btn btn-accent btn-sm" data-gen-formula="${escapeHtml(r.subj.id)}" data-incremental="1">＋ 补齐 ${remaining} 批${pending.length ? `（${pending.length} 门课）` : ""}</button>
-             <button class="btn btn-ghost btn-sm" data-gen-formula="${escapeHtml(r.subj.id)}">↻ 全部重提取</button>`
-          : `<button class="btn ${stale ? "btn-accent" : "btn-ghost"} btn-sm" data-gen-formula="${escapeHtml(r.subj.id)}">${stale ? "↻ 升级重提取" : "↻ 重新提取"}</button>`));
+    const refreshLabel = action.refreshLabel || "↻ 全部重提取";
+    const unfiledFrom = [...new Set(items.map((f) => f.originLessonTitle || f.docSubject).filter(Boolean))];
     // One subject per fold. With several subjects the page became a very long
     // scroll dominated by whichever library was opened last, so each subject
     // collapses to a single header line and the state is remembered.
-    const folded = collapsedSubjects.has(r.subj.id);
+    const folded = !r.unfiled && collapsedSubjects.has(r.subj.id);
     // The table holds formulas you can compute with; reaction schemes are kept,
     // but in their own block below it so they stop burying the formulas.
     const mathItems = items.filter((f) => !isReactionEntry(f));
     const chemItems = items.filter(isReactionEntry);
+    // A formula whose source point cannot be found any more keeps a visible badge
+    // naming the course it came from, so "why is this not under 生理学?" is answered
+    // on the card itself instead of being a silent move.
+    const originChip = (f) => f.originLessonTitle
+      ? `<span class="sub" title="记录的来源知识点已经不在那门课里了（知识点被重新生成或改名），所以这条无法在学科表里定位来源" style="font-size:11.5px;padding:2px 8px;border:1px dashed var(--border);border-radius:999px;background:var(--surface)">🗂 原属：${escapeHtml(f.originLessonTitle)}（来源知识点已失效）</span>`
+      : (f.docSubject ? `<span class="sub" title="记录的来源课程已经不在课程列表里" style="font-size:11.5px;padding:2px 8px;border:1px dashed var(--border);border-radius:999px;background:var(--surface)">🗂 原属学科：${escapeHtml(f.docSubject)}（课程已删除）</span>` : "");
+    const headCount = r.unfiled
+      ? `${items.length} 个公式 · 来源已失效`
+      : `${r.lessons.length} 门课 · ${r.withPoints.length} 门已有知识点 · ${mathItems.length} 个公式${chemItems.length ? ` · ${chemItems.length} 个化学式（另列）` : ""}${folded && items.length ? "（已收起）" : ""}`;
     return `
-      <div class="card formula-group" data-group="${escapeHtml(r.subj.id)}">
+      <div class="card formula-group" data-group="${escapeHtml(r.subj.id)}"${r.unfiled ? ' data-unfiled="1"' : ""}>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <button class="btn btn-ghost btn-sm" data-fold="${escapeHtml(r.subj.id)}" title="${folded ? "展开" : "收起"}这个学科" style="padding:2px 8px;font-size:13px">${folded ? "▸" : "▾"}</button>
-          <h3 style="margin:0;cursor:pointer" data-fold="${escapeHtml(r.subj.id)}">📚 ${escapeHtml(r.subj.name)}</h3>
-          <span class="sub">${r.lessons.length} 门课 · ${r.withPoints.length} 门已有知识点 · ${mathItems.length} 个公式${chemItems.length ? ` · ${chemItems.length} 个化学式（另列）` : ""}${folded && items.length ? "（已收起）" : ""}</span>
-          <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">${btn}</div>
+          ${r.unfiled
+            ? `<span style="padding:2px 8px;font-size:13px">📎</span>`
+            : `<button class="btn btn-ghost btn-sm" data-fold="${escapeHtml(r.subj.id)}" title="${folded ? "展开" : "收起"}这个学科" style="padding:2px 8px;font-size:13px">${folded ? "▸" : "▾"}</button>`}
+          <h3 style="margin:0${r.unfiled ? "" : ";cursor:pointer"}"${r.unfiled ? "" : ` data-fold="${escapeHtml(r.subj.id)}"`}>${r.unfiled ? "📎 未归类" : `📚 ${escapeHtml(r.subj.name)}`}</h3>
+          <span class="sub">${headCount}</span>
+          <div style="margin-left:auto;display:flex;gap:8px;flex-wrap:wrap">${action.html || ""}</div>
         </div>
-        ${remaining ? `<div class="sub" data-fold-warn style="margin-top:7px;font-size:12.5px;color:var(--amber,#b45309)${folded ? ";display:none" : ""}">⚠️ 还有 ${remaining}/${allChunks.length} 批没有提取成功${pending.length ? `（${pending.map((l) => escapeHtml(l.title)).join("、")}）` : ""} —— 点「补齐 ${remaining} 批」只补这些，已完成的批次不会重跑、也不会重复收费。</div>` : ""}
-        ${stale ? `<div class="sub" data-fold-warn style="margin-top:7px;font-size:12.5px;color:var(--amber,#b45309)${folded ? ";display:none" : ""}">⚠️ 有 ${stale}/${items.length} 个公式是旧版格式（缺「常用场景」或例题「考什么」）：例题多为机械代公式，不含真实考题思路。点「↻ 升级重提取」重新生成即可补全。</div>` : ""}
+        ${r.unfiled ? `<div class="sub" data-fold-warn style="margin-top:7px;font-size:12.5px;color:var(--amber,#b45309)">这两种公式没法在学科表里定位来源：① 记录的来源课程已经不在课程列表里；② 记录的来源知识点在当前课程里已经找不到（课程的知识点被重新生成或改名）${unfiledFrom.length ? `。相关课程：${unfiledFrom.map(escapeHtml).join("、")}` : ""}。它们在卡片上标了原属课程，不会被丢掉；重新提取对应学科后会自动归位。</div>` : ""}
+        ${action.hint ? `<div class="sub" data-fold-warn style="margin-top:7px;font-size:12.5px;color:${action.hintLevel === "warn" ? "var(--amber,#b45309)" : "var(--text-dim,#6b7280)"}${folded ? ";display:none" : ""}">${action.hintLevel === "warn" ? "⚠️ " : "ℹ️ "}${action.hint}</div>` : ""}
+        ${r.movedOut ? `<div class="sub" data-fold-warn style="margin-top:7px;font-size:12.5px${folded ? ";display:none" : ""}">ℹ️ 另有 ${r.movedOut} 个从本学科课程提取的公式，其记录的来源知识点已被重新生成或改名，无法在这张表里定位来源——已归到页面底部的「未归类」（卡片上标了原属课程）。点「${escapeHtml(refreshLabel)}」重新提取会重新建立来源。</div>` : ""}
+        ${stale && !r.unfiled ? `<div class="sub" data-fold-warn style="margin-top:7px;font-size:12.5px;color:var(--amber,#b45309)${folded ? ";display:none" : ""}">⚠️ 有 ${stale}/${items.length} 个公式是旧版格式（缺「常用场景」或例题「考什么」）：例题多为机械代公式，不含真实考题思路。点「${escapeHtml(refreshLabel)}」重新生成即可补全。</div>` : ""}
         ${chapters.length ? `<div class="sub" data-fold-warn style="margin-top:6px;font-size:12px${folded ? ";display:none" : ""}">📕 章节：${chapters.map((t) => {
           const lid = chapterIds.get(t);
           return `${escapeHtml(t)}${lid ? ` <button class="chip" data-rename-lesson="${lid}" title="重命名这一章（课程标题）" style="font-size:12px;padding:3px 7px">✎</button>` : ""}`;
@@ -10667,12 +10987,12 @@ async function renderFormulas() {
         ${doc && doc.generatedAt ? `<div class="sub" data-fold-warn style="margin-top:6px;font-size:12px${folded ? ";display:none" : ""}">更新于 ${new Date(doc.generatedAt).toLocaleString()}</div>` : ""}
         ${isGeneral ? `<div class="sub" data-fold-warn style="margin-top:6px;font-size:12px;color:var(--amber,#b45309)${folded ? ";display:none" : ""}">「通用」是兜底学科：这些课的标题没有匹配到任何学科关键词（${r.withPoints.map((l) => escapeHtml(l.title)).join("、")}）。改法二选一 —— 在课程页把「学科」下拉框手动指定，或点上面的 ✎ 重命名时把学科名写进标题（例如「生物化学 第一章 …」）。</div>` : ""}
         <div class="formula-body"${folded ? ` style="display:none"` : ""} data-lesson-order="${escapeHtml(JSON.stringify(r.withPoints.map((l) => l.title)))}">
-          ${mathItems.length ? `<div style="margin-top:14px" data-formula-grid>${mathItems.map((f, i) => formulaCard(f, i, r.subj.id, chapterOf(f))).join("")}</div>`
-            : `<div class="sub" style="margin-top:10px">${items.length ? "这个学科目前只有化学式，没有可计算的公式——见下方「化学反应式」。" : `还没有提取公式${r.withPoints.length ? "——点右上角按钮，AI 会从该学科的知识点里整理出公式、用法和例题。" : "。"}`}</div>`}
+          ${mathItems.length ? `<div style="margin-top:14px" data-formula-grid${r.unfiled ? ' data-nogroup="1"' : ""}>${mathItems.map((f, i) => formulaCard(f, i, r.subj.id, chapterOf(f), r.unfiled ? originChip(f) : "")).join("")}</div>`
+            : `<div class="sub" style="margin-top:10px">${items.length ? "这里目前只有化学式，没有可计算的公式——见下方「化学反应式」。" : (r.unfiled ? "" : `还没有提取公式${r.withPoints.length ? "——点右上角按钮，AI 会从该学科的知识点里整理出公式、用法和例题。" : "。"}`)}</div>`}
           ${chemItems.length ? `<details class="chem-block" style="margin-top:16px">
             <summary class="sub" style="cursor:pointer;font-weight:600;padding:9px 12px;background:var(--surface);border-radius:8px">⚗️ 化学反应式与转运化学计量（${chemItems.length} 条 · 点开看）</summary>
             <div class="sub" style="margin:8px 0 0;font-size:12px">反应式、泵与转运体的化学计量、构象循环等非计算类条目——已从上面的公式表中分出，避免和数学公式混在一起。</div>
-            <div class="chem-body" style="margin-top:10px">${chemItems.map((f, i) => formulaCard(f, i, r.subj.id, chapterOf(f))).join("")}</div>
+            <div class="chem-body" style="margin-top:10px" data-formula-grid${r.unfiled ? ' data-nogroup="1"' : ""}>${chemItems.map((f, i) => formulaCard(f, i, r.subj.id, chapterOf(f), r.unfiled ? originChip(f) : "")).join("")}</div>
           </details>` : ""}
         </div>
       </div>`;
@@ -10701,10 +11021,11 @@ async function renderFormulas() {
   const applyGroupMode = () => {
     const chapterMode = formulaGroupMode() === "chapter";
     $("#view").querySelectorAll(".formula-body").forEach((body) => {
-      const grid = body.querySelector("[data-formula-grid]");
+      const grids = [...body.querySelectorAll("[data-formula-grid]")];
       // Flat view: the cards are the same elements, so put them back in the grid
-      // in the order they are currently shown and drop the sections.
+      // they came from and drop the sections.
       body.querySelectorAll(".formula-chapter").forEach((d) => {
+        const grid = grids[Number(d.dataset.grid) || 0];
         if (!chapterMode && grid) {
           const inner = d.querySelector(".formula-chapter-body");
           if (inner) [...inner.children].forEach((c) => grid.appendChild(c));
@@ -10742,12 +11063,12 @@ async function renderFormulas() {
   }));
   const foldAllBtn = $("#formula-fold-all");
   if (foldAllBtn) foldAllBtn.addEventListener("click", () => {
-    rows.forEach((r) => { if (((r.doc && r.doc.formulas) || []).length) { collapsedSubjects.add(r.subj.id); applyFold(r.subj.id, true); } });
+    rows.forEach((r) => { if (!r.unfiled && formulasOf(r).length) { collapsedSubjects.add(r.subj.id); applyFold(r.subj.id, true); } });
     saveFoldedSubjects(collapsedSubjects);
   });
   const unfoldAllBtn = $("#formula-unfold-all");
   if (unfoldAllBtn) unfoldAllBtn.addEventListener("click", () => {
-    rows.forEach((r) => { collapsedSubjects.delete(r.subj.id); applyFold(r.subj.id, false); });
+    rows.forEach((r) => { if (r.unfiled) return; collapsedSubjects.delete(r.subj.id); applyFold(r.subj.id, false); });
     saveFoldedSubjects(collapsedSubjects);
   });
 
@@ -10833,10 +11154,17 @@ async function renderFormulas() {
   // formula and it feels familiar without being recallable. Pushing it into the
   // existing SM-2 queue is what makes it stick, and it adds no new machinery:
   // the scheduler, the review view and the Anki export already handle cards.
+  // The card is identified by its normalised LaTeX, so the same button works on the
+  // 课程页 tab (where there is no library index to look an offset up in).
   $("#view").querySelectorAll("[data-make-card]").forEach((b) => b.addEventListener("click", async () => {
     const sid = b.dataset.makeCard;
-    const doc = await db.get("formulas", sid).catch(() => null);
-    const f = doc && (doc.formulas || [])[Number(b.dataset.cardIdx)];
+    const key = b.dataset.cardKey || "";
+    const docs = await db.getAll("formulas").catch(() => []);
+    let f = null;
+    for (const d of (docs || [])) {
+      f = (d.formulas || []).find((x) => formulaKey(x.latex) === key) || null;
+      if (f) break;
+    }
     if (!f) return;
     const existing = (await db.getAll("cards").catch(() => [])) || [];
     const front = formulaCardFront(f);
@@ -10854,26 +11182,7 @@ async function renderFormulas() {
     toast("已加入闪卡队列 —— 以后按间隔重复出现，直到你回想得出来", "success");
   }));
 
-  $("#view").querySelectorAll("[data-gen-formula]").forEach((b) => b.addEventListener("click", async () => {
-    const sid = b.dataset.genFormula;
-    const incremental = b.dataset.incremental === "1";
-    const name = (subjectById(sid) || {}).name || sid;
-    if (!(await requireTextKey())) return;
-    const pm = progressPanel(`${name} · ${incremental ? "纳入新课程" : "提取公式"}`);
-    const res = await generateSubjectFormulas(sid, pm, { incremental });
-    if (!res.ok) { pm.fail(res.reason); toast(res.reason, "error"); return; }
-    if (res.hadError) {
-      // Say it plainly: the run finished but part of it produced nothing, and those
-      // chapters are still waiting. Staying quiet here is what hid a whole chapter.
-      pm.done(`${res.count} 个公式（有批次失败）`, "查看公式库", () => renderFormulas());
-      toast("⚠️ 有批次没能解析出公式：本次结果已保留原库，失败的部分下次可以再试。", "error");
-      renderFormulas();
-      return;
-    }
-    pm.done(`${res.count} 个公式${incremental ? `（新增 ${res.added}）` : ""}`, "查看公式库", () => renderFormulas());
-    toast(incremental ? `✅ 新增 ${res.added} 个公式，共 ${res.count} 个` : `✅ 已整理 ${res.count} 个公式（含场景与例题）`, "success");
-    renderFormulas();
-  }));
+  bindFormulaGenButtons($("#view"), () => renderFormulas());
 }
 
 // Render a bare LaTeX string as a display formula.
@@ -10938,42 +11247,50 @@ function formulaCardBack(f) {
  * "未归入章节" section instead of being hidden.
  */
 function groupFormulaCardsByChapter(body) {
-  const grid = body.querySelector("[data-formula-grid]");
-  if (!grid) return;
-  const cards = [...grid.querySelectorAll(".formula-card")];
-  // The chapter order is the lesson order: the sections must read like the course.
-  const lessons = JSON.parse(body.dataset.lessonOrder || "[]");
-  const rank = new Map(lessons.map((t, i) => [t, i]));
-  const sections = new Map();
-  cards.forEach((c) => {
-    const key = c.dataset.chapter || "";
-    if (!sections.has(key)) sections.set(key, []);
-    sections.get(key).push(c);
-  });
-  const keys = [...sections.keys()].sort((a, b) => {
-    if (!a) return 1;                       // un-filed formulas go last
-    if (!b) return -1;
-    const ra = rank.has(a) ? rank.get(a) : Number.MAX_SAFE_INTEGER;
-    const rb = rank.has(b) ? rank.get(b) : Number.MAX_SAFE_INTEGER;
-    return (ra - rb) || a.localeCompare(b);
-  });
-  grid.querySelectorAll(".formula-chapter").forEach((el) => el.remove());
-  grid.querySelectorAll(".formula-card").forEach((el) => el.remove());
-  keys.forEach((key) => {
-    // A formula added before its chapter is uploaded has no lesson title: keep it
-    // visible and labelled rather than silently dropping it from the library.
-    const inner = sections.get(key).map((c) => c.outerHTML).join("");
-    const head = key
-      ? `<div class="formula-chapter-name">📕 ${mdInline(key)}</div>`
-      : `<div class="formula-chapter-name">📎 未归入章节</div>`;
-    grid.insertAdjacentHTML("beforeend",
-      `<details class="formula-chapter" data-chapter="${escapeHtml(key)}" open>`
-      + `<summary>${head}<span class="formula-chapter-count">${sections.get(key).length} 个</span></summary>`
-      + `<div class="formula-chapter-body">${inner}</div></details>`);
+  // One body can hold two grids (the formula table and, below it, the reaction
+  // block). Both are grouped by chapter so a course's count is complete, and a grid
+  // marked data-nogroup (the 未归类 bucket, where every card has no chapter anyway)
+  // is left alone.
+  const grids = [...body.querySelectorAll("[data-formula-grid]")];
+  grids.forEach((grid, gi) => {
+    if (grid.dataset.nogroup) return;
+    const cards = [...grid.querySelectorAll(".formula-card")];
+    // The chapter order is the lesson order: the sections must read like the course.
+    const lessons = JSON.parse(body.dataset.lessonOrder || "[]");
+    const rank = new Map(lessons.map((t, i) => [t, i]));
+    const sections = new Map();
+    cards.forEach((c) => {
+      const key = c.dataset.chapter || "";
+      if (!sections.has(key)) sections.set(key, []);
+      sections.get(key).push(c);
+    });
+    const keys = [...sections.keys()].sort((a, b) => {
+      if (!a) return 1;                       // un-filed formulas go last
+      if (!b) return -1;
+      const ra = rank.has(a) ? rank.get(a) : Number.MAX_SAFE_INTEGER;
+      const rb = rank.has(b) ? rank.get(b) : Number.MAX_SAFE_INTEGER;
+      return (ra - rb) || a.localeCompare(b);
+    });
+    // Sections remember which grid they came from, so the flat view puts each card
+    // back where it belongs instead of piling the reaction block into the table.
+    body.querySelectorAll(`details.formula-chapter[data-grid="${gi}"]`).forEach((el) => el.remove());
+    cards.forEach((c) => c.remove());
+    keys.forEach((key) => {
+      // A formula added before its chapter is uploaded has no lesson title: keep it
+      // visible and labelled rather than silently dropping it from the library.
+      const inner = sections.get(key).map((c) => c.outerHTML).join("");
+      const head = key
+        ? `<div class="formula-chapter-name">📕 ${mdInline(key)}</div>`
+        : `<div class="formula-chapter-name">📎 未归入章节</div>`;
+      grid.insertAdjacentHTML("beforeend",
+        `<details class="formula-chapter" data-grid="${gi}" data-chapter="${escapeHtml(key)}" open>`
+        + `<summary>${head}<span class="formula-chapter-count">${sections.get(key).length} 个</span></summary>`
+        + `<div class="formula-chapter-body">${inner}</div></details>`);
+    });
   });
 }
 
-function formulaCard(f, i, subjectId, chapter) {
+function formulaCard(f, i, subjectId, chapter, extraChip) {
   const ex = f.examples || [];
   // The card carries its chapter as data so grouping / filtering can read it back
   // off the DOM without re-deriving it (and so a 100-card subject costs nothing
@@ -10992,8 +11309,11 @@ function formulaCard(f, i, subjectId, chapter) {
       <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
         <b style="font-size:15px">${i + 1}. ${mdInline(f.name || "")}</b>
         ${chapter ? `<span class="sub" title="来自这节课：${escapeHtml(chapter)}" style="font-size:11.5px;padding:2px 8px;border:1px solid var(--border);border-radius:999px;background:var(--surface)">📕 ${mdInline(chapter)}</span>` : ""}
-        ${f.src ? `<button class="btn btn-ghost btn-sm" data-src-lesson="${escapeHtml(f.src.lessonId)}" data-src-idx="${f.src.idx}" title="跳到讲解这个公式的知识点" style="font-size:11.5px;padding:2px 8px">📖 ${mdInline(f.src.title)}</button>` : ""}
-        <button class="btn btn-ghost btn-sm" data-make-card="${escapeHtml(subjectId)}" data-card-idx="${i}" title="把「看公式」变成「想公式」：加入间隔重复复习队列" style="margin-left:auto;font-size:11.5px;padding:2px 8px">🎴 做成闪卡</button>
+        ${extraChip || ""}
+        ${f.src
+          ? `<button class="btn btn-ghost btn-sm" data-src-lesson="${escapeHtml(f.src.lessonId)}" data-src-idx="${f.src.idx}" title="${f.src.rematched ? "记录的知识点位置已变，已按标题重新定位到这个知识点" : "跳到讲解这个公式的知识点"}" style="font-size:11.5px;padding:2px 8px">📖 ${mdInline(f.src.title)}</button>`
+          : (f.srcLost ? `<span class="sub" title="这条公式记录的来源知识点在这门课里已经找不到了（课程被重新生成或知识点被删/改名）。公式本身仍然有效。" style="font-size:11.5px;padding:2px 8px;border:1px dashed var(--border);border-radius:999px;background:var(--surface)">📎 来源知识点已失效</span>` : "")}
+        <button class="btn btn-ghost btn-sm" data-make-card="${escapeHtml(subjectId)}" data-card-key="${escapeHtml(formulaKey(f.latex))}" title="把「看公式」变成「想公式」：加入间隔重复复习队列" style="margin-left:auto;font-size:11.5px;padding:2px 8px">🎴 做成闪卡</button>
       </div>
       <div style="margin:10px 0;padding:10px 14px;background:var(--surface);border-radius:9px;overflow-x:auto">
         ${formulaBlock(f.latex)}

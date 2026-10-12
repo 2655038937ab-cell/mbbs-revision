@@ -502,9 +502,27 @@ function refreshManualMasks(lessonId, idx) {
         cloze.insertAdjacentElement("afterend", sep);
         sep.insertAdjacentElement("afterend", btn);
       }
+
       else strip.insertBefore(btn, strip.firstChild);
+      // 一键显示：把这条知识点的所有手动遮字一次揭示（免得一个个点）
+      let showBtn = card.querySelector(".show-masks-btn");
+      if (!showBtn) {
+        showBtn = document.createElement("button");
+        showBtn.className = "btn btn-sm btn-ghost show-masks-btn";
+        showBtn.title = "把这条知识点上的手动遮字一次全部显示出来";
+        btn.insertAdjacentElement("afterend", showBtn);
+        showBtn.addEventListener("click", () => {
+          const all = masksOf(lessonId, idx);
+          all.forEach((_, k) => manualMaskRevealed.add(key + ":" + k));
+          refreshManualMasks(lessonId, idx);
+          toast(`已显示 ${all.length} 处手动遮字`, "success");
+        });
+      }
+      showBtn.textContent = `👁 一键显示 (${masks.length})`;
     } else if (!masks.length && btn) {
       btn.remove();
+      const sb = card.querySelector(".show-masks-btn");
+      if (sb) sb.remove();
     }
   }
   document.querySelectorAll(".r-a[data-idx][data-lesson]").forEach((ra) => {
@@ -4961,7 +4979,7 @@ function renderPointsTab(body, lesson) {
       <button class="chip ${pointsOrderMode === "topic" ? "active" : ""}" data-o="topic" title="按三级主题分组（便于查找，但阅读顺序会跳）">🌳 按主题</button>
       <button class="chip ${pointsOrderMode === "slide" ? "active" : ""}" data-o="slide" title="按讲义页序平铺（顺序和老师讲课一致，每点标注所属主题）">📄 按讲义顺序</button>
       <button class="btn btn-sm btn-ghost" id="btn-expand-all" data-state="collapsed">📂 全部展开</button>
-      <button class="btn btn-sm btn-ghost" id="btn-cloze-all" style="margin-left:auto" data-state="shown">🙈 全部自动遮字</button>
+      <button class="btn btn-sm btn-ghost" id="btn-cloze-all" style="margin-left:auto" data-state="shown">🖍 全部高亮</button>
     </div>
     <div id="kp-list"></div>`;
   $("#btn-feynman").addEventListener("click", () => openFeynmanChooser(currentLessonId, points));
@@ -4992,10 +5010,10 @@ function renderPointsTab(body, lesson) {
     list.querySelectorAll("mark.hl").forEach((m) => setCloze(m, hiding));
     list.querySelectorAll(".cloze-btn").forEach((b) => {
       b.dataset.state = hiding ? "hidden" : "shown";
-      b.textContent = hiding ? "👁 显示" : "🙈 自动遮字";
+      b.textContent = hiding ? "👁 显示" : "🖍 高亮术语";
     });
     btnAll.dataset.state = hiding ? "hidden" : "shown";
-    btnAll.textContent = hiding ? "👁 全部显示" : "🙈 全部自动遮字";
+    btnAll.textContent = hiding ? "👁 全部显示" : "🖍 全部高亮";
   });
   // Cloze: hide/reveal key terms (delegated so it survives re-renders).
   // Must be async: the manual-figure buttons below await their save before re-rendering.
@@ -5087,7 +5105,7 @@ function renderPointsTab(body, lesson) {
       const hiding = btn.dataset.state !== "hidden";
       card.querySelectorAll("mark.hl").forEach((m) => setCloze(m, hiding));
       btn.dataset.state = hiding ? "hidden" : "shown";
-      btn.textContent = hiding ? "👁 显示" : "🙈 自动遮字";
+      btn.textContent = hiding ? "👁 显示" : "🖍 高亮术语";
       return;
     }
     // Manual masks: click the block to peek at the text, × to remove it, and the
@@ -5677,7 +5695,7 @@ function applyPointLanguage(lesson, idx) {
     cloze = document.createElement("button");
     cloze.className = "btn btn-sm btn-ghost cloze-btn";
     cloze.dataset.state = "shown";
-    cloze.textContent = "🙈 自动遮字";
+    cloze.textContent = "🖍 高亮术语";
     enBtn.insertAdjacentElement("afterend", cloze);
   } else if (cloze) {
     cloze.style.display = "";

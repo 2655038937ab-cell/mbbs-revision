@@ -422,7 +422,9 @@ mark.hl.cloze-wrong { background: #fecaca; border-bottom: 2px solid var(--red); 
    blanked-out term is never "revealed", and with this rule first a leftover
    cloze-revealed (or cloze-wrong) from a previous run made every blank look green
    or red instead of grey. */
-mark.hl.cloze-hidden { background: #e2e8f0; color: #64748b; border-bottom: 2px solid var(--brand); cursor: pointer; }
+/* 自动遮字已改为「高亮术语」：术语保持可读，只做强调。原来这里是灰底遮住 + 点击揭示，
+   和手动遮字功能重复（手动遮字才是「选中即遮、点了才显示」）。 */
+mark.hl.cloze-hidden { background: rgba(250, 204, 21, .38); color: inherit; border-bottom: 2px solid #f59e0b; cursor: inherit; }
 
 /* ---------- Manual masks (🙈 遮住选中) ----------
    The original characters are removed from the DOM while a mask is hidden (they

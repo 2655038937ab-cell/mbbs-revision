@@ -415,6 +415,13 @@ details.mm-details[open] .mm-arrow { transform: rotate(90deg); }
 
 /* ---------- Key-point highlight & figures ---------- */
 mark.hl { background: #fde68a; color: #1f2937; font-weight: 700; padding: 0 2px; border-radius: 3px; }
+/* The 🖍 toggle. It used to call setCloze(), which *replaces the term with
+   underscores* — so "高亮术语" actually erased the word and there was nothing left
+   to read. Highlighting is now a class of its own: the text stays exactly as it
+   was and only the paint changes. It sits BEFORE the recall states on purpose:
+   cloze-hidden/cloze-revealed/cloze-wrong all have the same specificity, and a
+   term that is being actively recalled must keep its blank/green/red look. */
+mark.hl.hl-emph { background: #fbbf24; color: #1f2937; border-bottom: 2px solid #b45309; box-shadow: 0 1px 0 #f59e0b; cursor: pointer; }
 mark.hl.cloze-revealed { background: #bbf7d0; border-bottom: 2px solid var(--green); }
 mark.hl.cloze-wrong { background: #fecaca; border-bottom: 2px solid var(--red); }
 /* These three rules have identical specificity, so source order decides which one

@@ -232,7 +232,7 @@ function setCloze(mark, hidden) {
   }
 }
 
-/* ---------------- Manual masks (🙈 遮住选中) ----------------
+/* ---------------- Manual masks (✍️ 遮住选中) ----------------
  * The cloze above only blanks the model's own keyTerms. This lets the student
  * blank exactly the text they select.
  *
@@ -414,6 +414,31 @@ function masksOf(lessonId, idx) {
 // written back, exactly like every other edit on this page, so nothing else in
 // the lesson is lost — the server's content-loss guard would answer 409 if it
 // were missing fields, and db.put throws on anything but a 2xx.
+/* Save a lesson WITHOUT its page images.
+ *
+ * A lesson's full record is 18MB for a 38-slide deck, and 17.8MB of that is image
+ * dataUrls — while the knowledge points that a mask edit actually touches are 247KB.
+ * Every manual mask used to re-upload the whole thing, which is what "手動遮字響應有點慢"
+ * was measuring: 18MB per click on a home connection to the server.
+ *
+ * Dropping the images is safe by design: the server keeps them in its own lessonImages
+ * store and its own comment says a light update leaves existing images untouched, which
+ * is exactly how grading and reading-position saves already behave. */
+function lessonForSave(lesson) {
+  const copy = { ...lesson };
+  if (Array.isArray(copy.slides)) {
+    copy.slides = copy.slides.map((sl) => {
+      if (!sl || !Array.isArray(sl.images) || !sl.images.length) return sl;
+      return { ...sl, images: sl.images.map((im) => {
+        if (!im || !im.dataUrl) return im;
+        const { dataUrl, ...rest } = im;      // crop geometry, kind, name, mime, caption stay
+        return rest;
+      }) };
+    });
+  }
+  return copy;
+}
+
 async function saveManualMasks(lessonId, idx, masks) {
   const lesson = await getLessonFull(lessonId).catch(() => null);
   if (!lesson || !Array.isArray(lesson.points) || !lesson.points[idx]) {
@@ -426,7 +451,7 @@ async function saveManualMasks(lessonId, idx, masks) {
   else delete point.masks;
   lesson.updatedAt = Date.now();
   try {
-    await db.put("lessons", lesson);
+    await db.put("lessons", lessonForSave(lesson));   // 剥掉图片，18MB → ~250KB
   } catch (err) {
     toast("遮字保存失败：" + (err && err.message ? err.message : err), "error");
     return false;
@@ -464,10 +489,19 @@ function refreshManualMasks(lessonId, idx) {
       btn = document.createElement("button");
       btn.className = "btn btn-sm btn-ghost clear-masks-btn";
       btn.dataset.idx = String(idx);
-      btn.title = "移除这条知识点上的全部手动遮字";
-      btn.textContent = "🗑 清除手动遮字";
+      btn.title = "移除这条知识点上的全部手动遮字（这些是你自己选的，和「自动遮字」互不影响）";
+      btn.textContent = `🗑 清除手动遮字 (${masks.length})`;
+      btn.style.marginLeft = "6px";
+      btn.style.borderStyle = "dashed";
       const cloze = strip.querySelector(".cloze-btn");
-      if (cloze) cloze.insertAdjacentElement("afterend", btn);
+      if (cloze) {
+        const sep = document.createElement("span");
+        sep.className = "mask-sep";
+        sep.textContent = "·";
+        sep.style.cssText = "opacity:.35;margin:0 2px";
+        cloze.insertAdjacentElement("afterend", sep);
+        sep.insertAdjacentElement("afterend", btn);
+      }
       else strip.insertBefore(btn, strip.firstChild);
     } else if (!masks.length && btn) {
       btn.remove();
@@ -504,7 +538,7 @@ async function clearManualMasks(lessonId, idx) {
   if (await saveManualMasks(lessonId, idx, [])) toast("已清除手动遮字 ✓", "success");
 }
 
-// ---- The floating "🙈 遮住选中" button ----
+// ---- The floating "✍️ 遮住选中" button ----
 let maskSel = null;      // { text, target } captured at selection time
 let maskBtnEl = null;
 let maskBtnTimer = null;
@@ -515,7 +549,7 @@ function maskFloatBtn() {
   maskBtnEl.type = "button";
   maskBtnEl.id = "mask-float-btn";
   maskBtnEl.className = "btn btn-primary btn-sm";
-  maskBtnEl.textContent = "🙈 遮住选中";
+  maskBtnEl.textContent = "✍️ 遮住选中";
   maskBtnEl.hidden = true;
   // Keep the selection alive: without this the mousedown clears it before click.
   maskBtnEl.addEventListener("mousedown", (e) => e.preventDefault());
@@ -4927,7 +4961,7 @@ function renderPointsTab(body, lesson) {
       <button class="chip ${pointsOrderMode === "topic" ? "active" : ""}" data-o="topic" title="按三级主题分组（便于查找，但阅读顺序会跳）">🌳 按主题</button>
       <button class="chip ${pointsOrderMode === "slide" ? "active" : ""}" data-o="slide" title="按讲义页序平铺（顺序和老师讲课一致，每点标注所属主题）">📄 按讲义顺序</button>
       <button class="btn btn-sm btn-ghost" id="btn-expand-all" data-state="collapsed">📂 全部展开</button>
-      <button class="btn btn-sm btn-ghost" id="btn-cloze-all" style="margin-left:auto" data-state="shown">🙈 全部遮字</button>
+      <button class="btn btn-sm btn-ghost" id="btn-cloze-all" style="margin-left:auto" data-state="shown">🙈 全部自动遮字</button>
     </div>
     <div id="kp-list"></div>`;
   $("#btn-feynman").addEventListener("click", () => openFeynmanChooser(currentLessonId, points));
@@ -4958,10 +4992,10 @@ function renderPointsTab(body, lesson) {
     list.querySelectorAll("mark.hl").forEach((m) => setCloze(m, hiding));
     list.querySelectorAll(".cloze-btn").forEach((b) => {
       b.dataset.state = hiding ? "hidden" : "shown";
-      b.textContent = hiding ? "👁 显示" : "🙈 遮字";
+      b.textContent = hiding ? "👁 显示" : "🙈 自动遮字";
     });
     btnAll.dataset.state = hiding ? "hidden" : "shown";
-    btnAll.textContent = hiding ? "👁 全部显示" : "🙈 全部遮字";
+    btnAll.textContent = hiding ? "👁 全部显示" : "🙈 全部自动遮字";
   });
   // Cloze: hide/reveal key terms (delegated so it survives re-renders).
   // Must be async: the manual-figure buttons below await their save before re-rendering.
@@ -5053,7 +5087,7 @@ function renderPointsTab(body, lesson) {
       const hiding = btn.dataset.state !== "hidden";
       card.querySelectorAll("mark.hl").forEach((m) => setCloze(m, hiding));
       btn.dataset.state = hiding ? "hidden" : "shown";
-      btn.textContent = hiding ? "👁 显示" : "🙈 遮字";
+      btn.textContent = hiding ? "👁 显示" : "🙈 自动遮字";
       return;
     }
     // Manual masks: click the block to peek at the text, × to remove it, and the
@@ -5643,7 +5677,7 @@ function applyPointLanguage(lesson, idx) {
     cloze = document.createElement("button");
     cloze.className = "btn btn-sm btn-ghost cloze-btn";
     cloze.dataset.state = "shown";
-    cloze.textContent = "🙈 遮字";
+    cloze.textContent = "🙈 自动遮字";
     enBtn.insertAdjacentElement("afterend", cloze);
   } else if (cloze) {
     cloze.style.display = "";

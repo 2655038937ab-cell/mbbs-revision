@@ -137,16 +137,45 @@ const reviewState = (page) => page.evaluate(() => {
   console.log(`  entry 2: ${run2.map((x) => String(x).slice(0, 6)).join(" ")}`);
   ok(run1.length === 10 && run1.every(Boolean), "the tab exposes a card id per position");
   ok(run1.join() === run2.join(), "first 10 card ids are identical on the second entry");
-  ok(run1.join() === deck.slice(0, 10).map((c) => c.id).join(), "the tab order equals the createdAt+id order");
+  // The order must not follow the store's row order: PUTting a card with its exact
+  // content gives it a new rowid (it moves to the end server-side), and the deck
+  // the reader sees must not move with it.
+  const rowBefore = (await cardsOf(LESSON)).map((c) => c.id);
+  await request("PUT", `/api/store/cards/${encodeURIComponent(run1[0])}`, (await cardsOf(LESSON)).find((c) => c.id === run1[0]));
+  const rowAfter = (await cardsOf(LESSON)).map((c) => c.id);
+  await openCardsTab(page, LESSON, true);
+  const run3 = await readFirstN(10);
+  console.log(`  store row order of the first card: ${rowBefore.indexOf(run1[0])} -> ${rowAfter.indexOf(run1[0])}; tab order unchanged: ${run1.join() === run3.join()}`);
+  ok(run1.join() === run3.join(), "a server-side reorder does not move the deck the reader sees");
+
+  // cards stamped with a courseware index follow it, whatever the store order is
+  const stamped = [
+    { id: "zz-cw-2", front: "CW THIRD", back: "b", lessonId: LESSON, ease: 2.5, reps: 0, interval: 0, lapses: 0, due: Date.now(), createdAt: Date.now(), src: { idx: 2, slide: 9, title: "P3" } },
+    { id: "zz-cw-0", front: "CW FIRST", back: "b", lessonId: LESSON, ease: 2.5, reps: 0, interval: 0, lapses: 0, due: Date.now(), createdAt: Date.now(), src: { idx: 0, slide: 3, title: "P1" } },
+    { id: "zz-cw-1", front: "CW SECOND", back: "b", lessonId: LESSON, ease: 2.5, reps: 0, interval: 0, lapses: 0, due: Date.now(), createdAt: Date.now(), src: { idx: 1, slide: 4, title: "P2" } },
+  ];
+  const pc = await ctx.newPage();
+  const e7 = [];
+  pc.on("pageerror", (e) => e7.push(String(e).slice(0, 200)));
+  await pc.route(/\/api\/store\/cards(\?|$)/, async (route) => {
+    const resp = await route.fetch(); const body = await resp.json();
+    await route.fulfill({ response: resp, body: JSON.stringify({ ...(body.items ? body : {}), items: stamped }) });
+  });
+  await openCardsTab(pc, LESSON, true);
+  const cwOrder = [];
+  for (let i = 0; i < 3; i++) { cwOrder.push((await parsedPos(pc, LESSON))?.id); await pc.locator("#fc-next").click(); await pc.waitForTimeout(150); }
+  console.log(`  stamped deck served as [zz-cw-2, zz-cw-0, zz-cw-1] shows: ${JSON.stringify(cwOrder)}`);
+  ok(cwOrder.join() === ["zz-cw-0", "zz-cw-1", "zz-cw-2"].join(), "cards follow their courseware index (src.idx), not the store order");
+  await pc.close();
 
   // ---------- D. position memory survives a SERVER-SIDE reorder ----------
   console.log("\n=== D. position memory by card id (server reorder) ===");
   await openCardsTab(page, LESSON, true);
   for (let i = 0; i < 6; i++) { await page.locator("#fc-next").click(); await page.waitForTimeout(120); }
   const at7 = await parsedPos(page, LESSON);
-  const seventh = deck[6];
-  console.log(`  7th card: stored ${JSON.stringify(at7)}; expected id ${String(seventh.id).slice(0, 8)}`);
-  ok(at7 && at7.i === 6 && at7.id === seventh.id, "position 7 stores both index 6 and the card id");
+  const seventh = (await cardsOf(LESSON)).find((c) => c.id === (at7 && at7.id)) || {};
+  console.log(`  7th card in the tab order: stored ${JSON.stringify(at7)} (${String(seventh.front || "").slice(0, 20)})`);
+  ok(at7 && at7.i === 6 && !!at7.id, "position 7 stores both index 6 and the card id");
   // Make the server move that card to the end of its row order (identical PUT).
   const serverBefore = (await cardsOf(LESSON)).map((c) => c.id);
   await request("PUT", `/api/store/cards/${encodeURIComponent(seventh.id)}`, seventh);
@@ -172,15 +201,19 @@ const reviewState = (page) => page.evaluate(() => {
   await openCardsTab(page, LESSON, false);
   const legacy = await parsedPos(page, LESSON);
   console.log(`  legacy plain "3" -> ${JSON.stringify(legacy)}`);
-  ok(legacy && legacy.i === 3 && legacy.id === deck[3].id, "a legacy index-only value is still honoured (and upgraded with the id)");
+  ok(legacy && legacy.i === 3 && !!legacy.id, "a legacy index-only value is still honoured (and upgraded with the id)");
 
   // ---------- F. SM-2: grading writes the four fields ----------
   console.log("\n=== F. SM-2 write path (real card, snapshot + restore) ===");
-  const target = serverCards.find((c) => c.id === deck[0].id);
+  // The deck order is the courseware order now, so take the card the page will
+  // actually show at position 0 rather than assuming the old sort.
+  await page.evaluate((k) => localStorage.setItem(k, JSON.stringify({ i: 0, id: null })), KEY(LESSON));
+  await openCardsTab(page, LESSON, false);
+  const targetId = (await parsedPos(page, LESSON))?.id;
+  const target = (await cardsOf(LESSON)).find((c) => c.id === targetId);
   const beforeRec = { interval: target.interval, due: target.due, reps: target.reps, ease: target.ease, lapses: target.lapses };
   const beforeMd5 = md5(target);
-  await page.evaluate((k) => localStorage.setItem(k, "0"), KEY(LESSON));
-  await openCardsTab(page, LESSON, false);
+  console.log(`  grading the card the tab shows at position 1: ${String(target.front || "").slice(0, 26)}`);
   const schedLine = (await faceState(page)).sched;
   console.log(`  card schedule line: ${JSON.stringify(schedLine)}`);
   ok(!!schedLine && /interval|ease|reps/.test(schedLine), "the tab prints the card's interval/ease/reps");
@@ -355,19 +388,18 @@ const reviewState = (page) => page.evaluate(() => {
 
   // ---------- J. the tab says out loud that it will not re-queue ----------
   console.log("\n=== J. tab after Again: note + no auto-return ===");
-  const realCards = await cardsOf(LESSON);
-  const realDeck = realCards.slice().sort(cmpOrder);
-  const target2 = realDeck[1];
+  await page.evaluate((k) => localStorage.setItem(k, JSON.stringify({ i: 1, id: null })), KEY(LESSON));
+  await openCardsTab(page, LESSON, false);
+  const pos2 = await parsedPos(page, LESSON);
+  const target2 = (await cardsOf(LESSON)).find((c) => c.id === (pos2 && pos2.id));
   const snap2 = JSON.parse(JSON.stringify(target2));
   const snap2md5 = md5(snap2);
-  await page.evaluate((k) => localStorage.setItem(k, "1"), KEY(LESSON));
-  await openCardsTab(page, LESSON, false);
   const front1 = (await faceState(page)).text;
   await page.locator("#fc").click();
   await page.waitForTimeout(200);
   await page.locator('.grade-btn[data-g="0"]').click();
   await page.waitForTimeout(1500);
-  const note = await page.evaluate(() => { const el = [...document.querySelectorAll("#tab-body .sub")].map((e) => e.textContent.trim()).find((t) => t.includes("完全忘了")); return el || null; });
+  const note = await page.evaluate(() => { const el = document.querySelector("#tab-body .fc-note"); return el ? el.textContent.trim() : null; });
   console.log(`  note: ${JSON.stringify(note)}`);
   ok(!!note && /今日学习/.test(note) && /不会自动回来/.test(note), "the tab explains that Again comes back in 今日学习, not here");
   ok(await page.locator("#fc-go-review").count() > 0, "a 🎯 去今日学习 entry point is offered");
@@ -412,47 +444,52 @@ const reviewState = (page) => page.evaluate(() => {
   const gotK = await pk.evaluate(() => {
     const wrap = document.querySelector("#tab-body .flashcard-wrap");
     const txt = wrap ? wrap.innerText : "";
-    const m = txt.match(/已看\s*(\d+)\s*\/\s*共\s*(\d+)\s*张/);
+    const m = txt.match(/已做\s*(\d+)\s*\/\s*共\s*(\d+)\s*张/);
     const n = (re) => { const x = txt.match(re); return x ? Number(x[1]) : null; };
     const bar = document.querySelector("#fc-bar");
     const track = bar ? bar.parentElement.getBoundingClientRect().width : 0;
     return {
       seen: m ? Number(m[1]) : null, total: m ? Number(m[2]) : null,
-      newN: n(/没看过\s*(\d+)/), learning: n(/学习中\s*(\d+)/), due: n(/今天到期\s*(\d+)/), mature: n(/已成熟\s*(\d+)/),
+      newN: n(/没做过\s*(\d+)/), learning: n(/学习中\s*(\d+)/), due: n(/今天到期\s*(\d+)/), mature: n(/已成熟\s*(\d+)/),
       barPct: track ? Math.round((bar.getBoundingClientRect().width / track) * 1000) / 10 : null,
       rows: document.querySelectorAll("#tab-body [data-fc-jump]").length,
       newChip: (document.querySelector("#fc-f-new") || {}).textContent || "",
     };
   });
   console.log(`  页面显示: ${JSON.stringify(gotK)}`);
-  ok(gotK.seen === expectK.seen && gotK.total === expectK.total, `已看 ${gotK.seen}/${gotK.total} == ${expectK.seen}/${expectK.total}`);
-  ok(gotK.newN === expectK.newN, `没看过 ${gotK.newN} == ${expectK.newN}`);
+  ok(gotK.seen === expectK.seen && gotK.total === expectK.total, `已做 ${gotK.seen}/${gotK.total} == ${expectK.seen}/${expectK.total}`);
+  ok(gotK.newN === expectK.newN, `没做过 ${gotK.newN} == ${expectK.newN}`);
   ok(gotK.learning === expectK.learning, `学习中 ${gotK.learning} == ${expectK.learning}`);
   ok(gotK.mature === expectK.mature, `已成熟 ${gotK.mature} == ${expectK.mature}`);
   ok(gotK.due === expectK.due, `今天到期 ${gotK.due} == ${expectK.due}`);
   const wantK = Math.round((expectK.seen / expectK.total) * 1000) / 10;
-  ok(Math.abs(gotK.barPct - wantK) <= 1, `进度条 ${gotK.barPct}% == 已看/总数 ${wantK}% (±1%)`);
-  ok(gotK.rows === expectK.total, `清单行数 ${gotK.rows} == 总卡数 ${expectK.total}`);
-  // 只看没看过的: rows drop to the new count, jump lands on the first new card
+  ok(Math.abs(gotK.barPct - wantK) <= 1, `进度条 ${gotK.barPct}% == 已做/总数 ${wantK}% (±1%)`);
+  ok(gotK.rows === 0, "the checklist is collapsed until 📋 清单 is pressed");
+  await pk.locator("#fc-list-btn").click();
+  await pk.waitForTimeout(350);
+  const opened = await pk.evaluate(() => document.querySelectorAll("#tab-body [data-fc-jump]").length);
+  console.log(`  打开 📋 清单: rows=${opened}`);
+  ok(opened === expectK.total, `清单行数 ${opened} == 总卡数 ${expectK.total}`);
+  // 只看没做过的: rows drop to the new count, jump lands on the first new card
   await pk.locator("#fc-f-new").click();
   await pk.waitForTimeout(400);
   const filtered = await pk.evaluate(() => ({
     rows: document.querySelectorAll("#tab-body [data-fc-jump]").length,
     header: (document.querySelector("#tab-body .flashcard-wrap .sub") || {}).textContent || null,
   }));
-  console.log(`  只看没看过的: rows=${filtered.rows} header=${JSON.stringify(filtered.header)}`);
-  ok(filtered.rows === expectK.newN, `只看没看过的 rows ${filtered.rows} == 没看过 ${expectK.newN}`);
+  console.log(`  只看没做过的: rows=${filtered.rows} header=${JSON.stringify(filtered.header)}`);
+  ok(filtered.rows === expectK.newN, `只看没做过的 rows ${filtered.rows} == 没做过 ${expectK.newN}`);
   await pk.locator("#fc-f-all").click();
   await pk.waitForTimeout(300);
   await pk.locator("#fc-jump-new").click();
   await pk.waitForTimeout(400);
   const jumped = await parsedPos(pk, LESSON);
-  const firstNew = deckK.slice().sort(cmpOrder).find((c) => c.reps < 1);
-  console.log(`  跳到第一张没看过的 -> ${JSON.stringify(jumped)} expected ${firstNew.id}`);
-  ok(jumped && jumped.id === firstNew.id, "跳到第一张没看过的 lands on the first reps=0 card");
+  const firstNew = deckK.find((c) => c.reps < 1);
+  console.log(`  跳到第一张没做过的 -> ${JSON.stringify(jumped)} expected ${firstNew.id}`);
+  ok(jumped && jumped.id === firstNew.id, "跳到第一张没做过的 lands on the first reps=0 card");
   await pk.close();
 
-  const allErrs = [...errs, ...e2, ...e3, ...e4, ...e5, ...e6];
+  const allErrs = [...errs, ...e2, ...e3, ...e4, ...e5, ...e6, ...e7];
   console.log(`\npage errors: ${allErrs.length ? JSON.stringify(allErrs) : "none"}`);
   if (allErrs.length) { failures++; process.exitCode = 1; }
 

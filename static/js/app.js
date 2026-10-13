@@ -2297,7 +2297,9 @@ STRICT rules — a card earns its place only if answering it teaches the subject
 - The front is a prompt, not a topic title — it must force recall of a specific fact ("Which nerve supplies …?", "What happens to X when Y?", "Why does Z …?"). Prefer why / what-happens questions over yes-no.
 - Use only facts actually present in the key points: do not invent, assume or import outside knowledge, and keep every term exactly as the key points name it.
 
-Return JSON: {"cards":[{"front":"...","back":"..."}]}
+Return JSON: {"cards":[{"point":"<the exact key point (copy its line) this card tests>","front":"...","back":"..."}]}
+
+Every card MUST name the key point it was written from in "point", copied verbatim from the list below — this is what files the card under the right slide. One key point may produce several cards; they all name that same point.
 
 Key points:
 ${ptext}`;
@@ -5565,6 +5567,46 @@ function normPointTitle(s) {
     .replace(/[（(【\[][^）)】\]]*[）)】\]]/g, "")   // drop parenthetical add-ons
     .replace(/[^\p{L}\p{N}]+/gu, "");             // drop punctuation/space/case
 }
+
+/* Which knowledge point (and therefore which slide) does a flashcard come from?
+ *
+ * Cards are generated in batches of 12 consecutive points and only carry
+ * front/back, so the flashcard tab could not follow the courseware order — the
+ * store returns rows in an arbitrary row order (and INSERT OR REPLACE moves a
+ * graded card to the end). resolveCardSrc() runs at generation and stamps the
+ * card with { idx, slide, title }.
+ *
+ * The model is asked to name the point it wrote the card from; that citation is
+ * matched first (exact normalised title), then the point's title appearing in the
+ * card text, then its key terms — all against the SMALL batch, where a term can
+ * only belong to one of ≤12 points, which is far more reliable than matching
+ * across a whole 60-point lecture.
+ */
+function resolveCardSrc(card, batchPoints, base, minScore = 3) {
+  const pts = Array.isArray(batchPoints) ? batchPoints : [];
+  if (!pts.length) return null;
+  const cited = normPointTitle(card && card.point);
+  const text = normPointTitle(`${(card && card.front) || ""} ${(card && card.back) || ""}`);
+  let best = -1, bestScore = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i] || {};
+    const t = normPointTitle(p.title);
+    let score = 0;
+    if (cited && t && cited === t) score = 100;                 // the model named this very point
+    else if (cited && t && (t.includes(cited) || cited.includes(t)) && cited.length >= 4) score = 60;
+    else if (t && t.length >= 4 && text.includes(t)) score = 40 + t.length;   // title is in the card
+    else {
+      for (const term of (p.keyTerms || [])) {
+        const n = normPointTitle(term);
+        if (n && n.length >= 2 && text.includes(n)) score += n.length >= 4 ? 3 : 1.5;
+      }
+    }
+    if (score > bestScore) { bestScore = score; best = i; }
+  }
+  if (best < 0 || bestScore < minScore) return null;
+  const p = pts[best];
+  return { idx: base + best, slide: p.slide != null ? p.slide : null, title: String(p.title || "") };
+}
 function bigramSet(s) {
   const out = new Set();
   const t = String(s || "");
@@ -6226,6 +6268,44 @@ function compareCardOrder(a, b) {
   return String((a && a.id) || "").localeCompare(String((b && b.id) || ""));
 }
 
+/* The courseware index of each card of a lesson, as Map<cardId, index>:
+ * a card stamped at generation (src.idx) keeps its own index; an older card is
+ * matched against the lesson's points with the strict bar (a title match, or
+ * several key terms), so only cards that clearly come from a point move.
+ * Cards that cannot be placed are absent and stay in their remembered order. */
+function cardPointIndex(lesson, cards) {
+  const pts = (lesson && lesson.points) || [];
+  const out = new Map();
+  if (!pts.length) return out;
+  for (const c of (cards || [])) {
+    if (!c || !c.id) continue;
+    if (c.src && Number.isFinite(c.src.idx) && c.src.idx >= 0 && c.src.idx < pts.length) {
+      out.set(c.id, c.src.idx);
+      continue;
+    }
+    const hit = resolveCardSrc({ front: c.front, back: c.back }, pts, 0, 6);
+    if (hit) out.set(c.id, hit.idx);
+  }
+  return out;
+}
+
+/* The order the deck had the first time its tab was opened: remembered per
+ * lesson so a graded card (which the store rewrites with a new rowid, moving it
+ * to the end of the list) cannot shuffle the deck for everyone else. */
+function rememberedOrder(lessonId, cards) {
+  const key = "mbbs_fc_order:" + String(lessonId == null ? "" : lessonId);
+  let map = {};
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === "object") map = parsed;
+  } catch { map = {}; }
+  let dirty = false;
+  (cards || []).forEach((c, i) => { if (c && c.id && map[c.id] === undefined) { map[c.id] = i; dirty = true; } });
+  if (dirty) { try { localStorage.setItem(key, JSON.stringify(map)); } catch { /* private mode */ } }
+  return new Map(Object.entries(map).map(([k, v]) => [k, Number(v) || 0]));
+}
+
 function renderCardsTab(body, lesson, cards) {
   if (!cards.length) {
     body.innerHTML = emptyState("🃏", "No flashcards yet.", `<div style="margin-top:14px"><button class="btn btn-accent" id="btn-gen3">✨ Generate study set</button></div>`);
@@ -6241,7 +6321,20 @@ function renderCardsTab(body, lesson, cards) {
   //         visible entry point instead of being invisible in this tab.
   // `deck` is the sorted copy every index below refers to; `cards` stays the
   // caller's array so grading still writes back to the record it came from.
-  const deck = cards.slice().sort(compareCardOrder);
+  // Courseware order: a card stamped at generation (see resolveCardSrc) sorts by
+  // its place in lesson.points — the order the 知识点 tab and the slides present
+  // the material. Unstamped cards are matched the same way; whatever cannot be
+  // placed keeps the order it had when the deck was first opened (remembered, so
+  // the store's row churn cannot move it).
+  const pointIndex = cardPointIndex(lesson, cards);
+  const remembered = rememberedOrder(lesson.id, cards);
+  const deck = cards.slice().sort((a, b) => {
+    const ia = pointIndex.get(a.id), ib = pointIndex.get(b.id);
+    const aA = Number.isFinite(ia), bA = Number.isFinite(ib);
+    if (aA !== bA) return aA ? -1 : 1;                 // placed cards first
+    if (aA && bA && ia !== ib) return ia - ib;         // ...in courseware order
+    return (remembered.get(a.id) ?? 1e9) - (remembered.get(b.id) ?? 1e9);
+  });
   let filter = "all";
   const dueList = () => deck.filter((c) => isDue(c));
   const newList = () => deck.filter((c) => !((c.reps || 0) >= 1));
@@ -6269,7 +6362,7 @@ function renderCardsTab(body, lesson, cards) {
   const statusOf = (c) => {
     if (isMature(c)) return { key: "mature", label: "🌳 已成熟", dot: "🌳" };
     if (isSeen(c)) return { key: "learning", label: "🌱 学习中", dot: "🌱" };
-    return { key: "new", label: "🆕 没看过", dot: "🆕" };
+    return { key: "new", label: "🆕 没做过", dot: "🆕" };
   };
   let listOpen = false;   // keep the checklist expanded across re-renders
   const render = () => {
@@ -6283,20 +6376,21 @@ function renderCardsTab(body, lesson, cards) {
     const dueN = dueList().length;
     const pct = total ? Math.round((seenN / total) * 1000) / 10 : 0;
     const progressHtml = `
-      <div id="fc-progress" style="margin-bottom:10px">
-        <div class="sub" style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12.5px;margin-bottom:4px;flex-wrap:wrap">
-          <span>已看 <b>${seenN}</b> / 共 <b>${total}</b> 张</span>
-          <span title="口径（与进度页一致）：没看过 = reps=0；学习中 = 看过且 interval&lt;21 天；已成熟 = interval≥21 天；今天到期 = due≤现在（独立的排程标记，新卡天然到期，所以会和「没看过」重叠）">
-            🆕 没看过 ${newN} · 🌱 学习中 ${learningN} · 🔁 今天到期 ${dueN} · 🌳 已成熟 ${matureN}
+      <div id="fc-progress" class="fc-progress">
+        <div class="fc-progress-top">
+          <span>已做 <b>${seenN}</b> / 共 <b>${total}</b> 张</span>
+          <span class="fc-chips" title="口径（与进度页一致）：没做过 = reps=0（还没评过分）；学习中 = 做过且 interval&lt;21 天；已成熟 = interval≥21 天；今天到期 = due≤现在（独立的排程标记，新卡天然到期，所以会和「没做过」重叠）">
+            <span class="fc-chip">🆕 没做过 <b>${newN}</b></span>
+            <span class="fc-chip">🌱 学习中 <b>${learningN}</b></span>
+            <span class="fc-chip">🔁 今天到期 <b>${dueN}</b></span>
+            <span class="fc-chip">🌳 已成熟 <b>${matureN}</b></span>
           </span>
         </div>
-        <div style="height:8px;border-radius:6px;background:var(--surface-2,#eef2f7);overflow:hidden">
-          <div id="fc-bar" style="height:100%;width:${pct}%;background:var(--brand,#2563eb);transition:width .2s"></div>
-        </div>
+        <div class="fc-bar"><i id="fc-bar" style="width:${pct}%"></i></div>
       </div>`;
     if (!list.length) {
       body.innerHTML = `<div class="flashcard-wrap">${progressHtml}` +
-        emptyState(filter === "new" ? "🆕" : "⏰", filter === "new" ? "这门课的卡都看过了。" : "今天没有到期的卡片。",
+        emptyState(filter === "new" ? "🆕" : "⏰", filter === "new" ? "这门课的卡都做过了。" : "今天没有到期的卡片。",
           `<div style="margin-top:14px"><button class="btn btn-accent" id="fc-f-all">看全部 ${deck.length} 张</button></div>`) + `</div>`;
       const all = $("#fc-f-all");
       if (all) all.addEventListener("click", () => { filter = "all"; idx = resolveFcPos(readFcPos(lesson.id), deck); render(); });
@@ -6313,27 +6407,26 @@ function renderCardsTab(body, lesson, cards) {
     const checklist = list.map((c, i) => {
       const s = statusOf(c);
       const frontText = String(c.front || "").replace(/\s+/g, " ").trim().slice(0, 30);
-      return `<div data-fc-jump="${i}" title="${isDue(c) ? "今天到期" : ""}" style="display:flex;gap:8px;align-items:center;padding:5px 9px;cursor:pointer;border-bottom:1px solid var(--border);${i === idx ? "background:var(--surface-2,#eef2f7);font-weight:600" : ""}">`
-        + `<span class="sub" style="min-width:30px;text-align:right">${i + 1}</span>`
-        + `<span title="${s.label}">${s.dot}${isDue(c) ? "🔁" : ""}</span>`
-        + `<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(frontText)}</span></div>`;
+      return `<div data-fc-jump="${i}" class="fc-list-row${i === idx ? " on" : ""}" title="${s.label}${isDue(c) ? " · 今天到期" : ""}">`
+        + `<span class="fc-list-n">${i + 1}</span>`
+        + `<span>${s.dot}${isDue(c) ? "🔁" : ""}</span>`
+        + `<span class="fc-list-t">${escapeHtml(frontText)}</span></div>`;
     }).join("");
     body.innerHTML = `
       <div class="flashcard-wrap">
         ${progressHtml}
-        <div class="sub" id="fc-pos" style="text-align:center;margin-bottom:8px">第 ${idx + 1} / ${list.length} 张 · <span title="当前卡状态">${st.label}${isDue(card) ? " · 🔁 今天到期" : ""}</span> · 翻牌后评分（同今日学习）${backHint}</div>
-        <div style="display:flex;justify-content:center;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
-          <button class="btn btn-sm ${filter === "all" ? "btn-accent" : "btn-ghost"}" id="fc-f-all" title="浏览视图：按卡片加入顺序（createdAt）固定排序，不按复习时间排序；排程请看「今日学习」">全部 ${deck.length}</button>
-          <button class="btn btn-sm ${filter === "new" ? "btn-accent" : "btn-ghost"}" id="fc-f-new" title="只看没看过的（reps = 0）">🆕 只看没看过的 ${newN}</button>
-          <button class="btn btn-sm ${filter === "due" ? "btn-accent" : "btn-ghost"}" id="fc-f-due" title="只显示 SM-2 排程里今天到期的卡片">⏰ 今天到期 ${dueN}</button>
-          ${newN ? `<button class="btn btn-sm btn-ghost" id="fc-jump-new" title="跳到第一张没看过的卡">⏭ 跳到第一张没看过的</button>` : ""}
-          <span class="sub" id="fc-sched" style="font-size:12px">${schedLabel(card)}</span>
+        <div class="fc-toolbar">
+          <div class="fc-tabs">
+            <button id="fc-f-all" class="fc-tab${filter === "all" ? " on" : ""}" title="浏览视图：按课件的知识点/幻灯片顺序排列（排程请看「今日学习」）">全部 <b>${deck.length}</b></button>
+            <button id="fc-f-new" class="fc-tab${filter === "new" ? " on" : ""}" title="只看没做过的（reps = 0，还没评过分）">🆕 没做过 <b>${newN}</b></button>
+            <button id="fc-f-due" class="fc-tab${filter === "due" ? " on" : ""}" title="只显示 SM-2 排程里今天到期的卡片">🔁 到期 <b>${dueN}</b></button>
+          </div>
+          ${newN ? `<button class="btn btn-sm btn-ghost" id="fc-jump-new" title="跳到第一张没做过的卡">⏭ 没做过的第一张</button>` : ""}
+          <button class="btn btn-sm btn-ghost" id="fc-list-btn" title="展开/收起卡片清单：序号 + 正面前 30 字 + 状态，点一行跳到那张卡">📋 清单 <b>${list.length}</b></button>
         </div>
-        ${lastNote ? `<div class="sub" style="text-align:center;font-size:12px;margin:-4px 0 12px;line-height:1.5">${lastNote} <button class="btn btn-sm btn-ghost" id="fc-go-review" style="margin-left:4px">🎯 去今日学习</button></div>` : ""}
-        <details id="fc-list" style="margin-bottom:12px"${listOpen ? " open" : ""}>
-          <summary class="sub" style="cursor:pointer;font-size:12.5px">📋 卡片清单（${list.length} 张，点击跳转）</summary>
-          <div style="max-height:240px;overflow:auto;margin-top:6px;border:1px solid var(--border);border-radius:8px">${checklist}</div>
-        </details>
+        <div class="fc-pos" id="fc-pos">第 ${idx + 1} / ${list.length} 张 · ${st.label}${isDue(card) ? " · 🔁 今天到期" : ""}${backHint} <span id="fc-sched">${schedLabel(card)}</span></div>
+        ${listOpen ? `<div class="fc-list" id="fc-list">${checklist}</div>` : ""}
+        ${lastNote ? `<div class="fc-note">${lastNote} <button class="btn btn-sm btn-ghost" id="fc-go-review">🎯 去今日学习</button></div>` : ""}
         <div class="flashcard" id="fc">
           <div class="card-label">题目</div>
           <div class="card-text" id="fc-text"></div>
@@ -6376,8 +6469,8 @@ function renderCardsTab(body, lesson, cards) {
       lastNote = null;
       render();
     });
-    const listEl = $("#fc-list");
-    if (listEl) listEl.addEventListener("toggle", () => { listOpen = listEl.open; });
+    const listBtn = $("#fc-list-btn");
+    if (listBtn) listBtn.addEventListener("click", () => { listOpen = !listOpen; render(); });
     body.querySelectorAll("[data-fc-jump]").forEach((row) => row.addEventListener("click", () => {
       const at = Number(row.dataset.fcJump);
       // The checklist row index addresses the CURRENT view, so a filtered list
@@ -8270,11 +8363,19 @@ async function generateStudySet(lessonId, regenerate = false) {
       return { error: `卡片返回内容无法解析（${String((r && r.content) || "").length} 字符，疑似被截断）` };
     });
     let cardError = "";
-    for (const res of results) {
+    for (let bi = 0; bi < results.length; bi++) {
+      const res = results[bi];
       if (!res) continue;
       const list = Array.isArray(res) ? res : (Array.isArray(res.cards) ? res.cards : []);
       if (res.error && !cardError) cardError = res.error;
-      cards = cards.concat(list.map((c) => newCard({ lessonId, front: c.front, back: c.back })));
+      // parallelMap preserves input order, so results[bi] belongs to
+      // cardBatches[bi] (points bi*CB .. bi*CB+11) — the batch resolveCardSrc()
+      // matches against, which is what makes the courseware order recoverable.
+      const batch = cardBatches[bi] || [];
+      const base = bi * CB;
+      cards = cards.concat(list.map((c) => newCard({
+        lessonId, front: c.front, back: c.back, src: resolveCardSrc(c, batch, base),
+      })));
     }
     if (cardError) { pm.setStep(step, "error"); toast("Flashcards: " + cardError, "error"); }
     else if (cards.length) pm.setStep(step, "done"); else pm.setStep(step, "error");

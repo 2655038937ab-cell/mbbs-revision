@@ -244,6 +244,57 @@ a { color: var(--accent); }
 .flashcard .card-text { font-size: 20px; font-weight: 600; line-height: 1.5; }
 .flashcard .card-text.answer { font-size: 17px; font-weight: 500; color: var(--brand-dark); }
 
+/* ---------- Flashcard chrome: progress, filters, checklist ----------
+   The tab stacks a lot of small things above the card (progress, four status
+   counts, three filters, a jump button and the checklist). They are grouped
+   into two compact rows with their own classes so the layout is not a wall of
+   inline styles: the progress line + bar, then one toolbar. The per-card
+   schedule is a dim suffix on the position line, not a fifth row. */
+.fc-progress { margin: 0 0 10px; }
+.fc-progress-top {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-2); margin-bottom: 6px;
+}
+.fc-progress-top b { color: var(--text); }
+.fc-chips { display: flex; gap: 12px; flex-wrap: wrap; }
+.fc-chip { white-space: nowrap; }
+.fc-chip b { color: var(--text); }
+.fc-bar { height: 8px; border-radius: 6px; background: var(--surface-2); overflow: hidden; }
+.fc-bar > i { display: block; height: 100%; background: var(--brand); transition: width .2s ease; border-radius: 6px; }
+.fc-toolbar {
+  display: flex; justify-content: center; align-items: center;
+  gap: 8px; flex-wrap: wrap; margin-bottom: 12px;
+}
+.fc-tabs { display: inline-flex; border: 1.5px solid var(--border); border-radius: 9px; overflow: hidden; }
+.fc-tab {
+  border: 0; background: transparent; padding: 5px 11px; font-size: 12.5px;
+  color: var(--text-2); cursor: pointer; white-space: nowrap;
+}
+.fc-tab + .fc-tab { border-left: 1.5px solid var(--border); }
+.fc-tab b { color: var(--text); }
+.fc-tab:hover { background: var(--surface-2); }
+.fc-tab.on { background: var(--brand); color: #fff; font-weight: 600; }
+.fc-tab.on b { color: #fff; }
+.fc-pos { text-align: center; font-size: 12.5px; color: var(--text-2); margin: 0 0 10px; }
+#fc-sched { color: var(--text-3); margin-left: 6px; }
+.fc-note {
+  text-align: center; font-size: 12.5px; color: var(--text-2); line-height: 1.5;
+  margin: -2px 0 12px;
+}
+.fc-list {
+  max-height: 240px; overflow: auto; margin-bottom: 12px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface);
+}
+.fc-list-row {
+  display: flex; gap: 8px; align-items: center; padding: 6px 10px;
+  cursor: pointer; border-bottom: 1px solid var(--border); font-size: 12.5px;
+}
+.fc-list-row:last-child { border-bottom: 0; }
+.fc-list-row:hover { background: var(--surface-2); }
+.fc-list-row.on { background: var(--surface-2); font-weight: 600; }
+.fc-list-n { min-width: 30px; text-align: right; color: var(--text-3); }
+.fc-list-t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ---------- Quiz ---------- */
 .q-option {
   display: flex; align-items: flex-start; gap: 11px; width: 100%; text-align: left;

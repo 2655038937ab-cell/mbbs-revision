@@ -3,7 +3,7 @@
 
 const DAY = 24 * 60 * 60 * 1000;
 
-export function newCard({ lessonId, front, back, source }) {
+export function newCard({ lessonId, front, back, source, src }) {
   const now = Date.now();
   return {
     id: uid(),
@@ -11,6 +11,10 @@ export function newCard({ lessonId, front, back, source }) {
     front,
     back,
     source: source || "",
+    // Where in the courseware this card came from: { idx: index in
+    // lesson.points, slide: the slide that teaches it, title }. The flashcard tab
+    // sorts by it, so a deck follows the slides instead of a random row order.
+    src: src || null,
     ease: 2.5,
     interval: 0, // days
     reps: 0,

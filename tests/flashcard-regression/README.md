@@ -1,9 +1,17 @@
 # Flashcard regression suite (闪卡)
 
-The 闪卡 tab also shows progress (已看 X / 共 Y, a bar, 🆕 没看过 / 🌱 学习中 / 🔁 今天到期 /
-🌳 已成熟, a collapsible card checklist and the 只看没看过的 / 今天到期 / 全部
-filters). 口径与进度页一致：看过 = `reps >= 1`，成熟 = `interval >= 21`；
-今天到期 = `due <= now`（独立的排程标记，新卡天然到期，所以与「没看过」重叠）。
+The 闪卡 tab also shows progress (已做 X / 共 Y, a bar, 🆕 没做过 / 🌱 学习中 / 🔁 今天到期 /
+🌳 已成熟, a collapsible card checklist and the 只看没做过的 / 今天到期 / 全部
+filters). 口径与进度页一致：做过 = `reps >= 1`，成熟 = `interval >= 21`；
+今天到期 = `due <= now`（独立的排程标记，新卡天然到期，所以与「没做过」重叠）。
+
+**顺序跟课件**：卡片在生成时由 `resolveCardSrc()` 打上 `src = { idx, slide, title }`
+（生成按 12 个知识点一批，模型回一个 `point` 字段指名来源，再在该批内匹配 → 幻灯片）。
+闪卡 tab 按 `src.idx` 排序（= 知识点 tab / 课件的顺序），没有 `src` 的老卡用同一套规则
+严格匹配（标题命中或 ≥2 个长术语），匹配不到的保持首次打开时的顺序（记在
+`mbbs_fc_order:<lessonId>`，这样服务端 INSERT OR REPLACE 造成的行序漂移不会打乱牌组）。
+实测：真实课 89 张里 40 张进入课件位（点 #4 slide 7 → #9 slide 12 → … 单调递增），
+其余排在其后；合成带 `src.idx` 的牌组完全按 idx 排序。
 
 One command:
 

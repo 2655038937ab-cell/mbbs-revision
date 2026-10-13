@@ -102,7 +102,10 @@ function intervalLabel(days) {
   // 2.999999988425926 rather than 3, which must never reach the UI.
   const d = Math.round(n);
   if (d >= 365) return Math.round(d / 365) + "y";
-  if (d >= 30) return Math.round(d / 30) + "mo";
+  // Months only from 60 days up: at 30–59 days "2mo" swallowed the difference
+  // between the Good and Easy buttons on a mature card (53d and 69d both read
+  // "2mo"), which is exactly the "the intervals look wrong" complaint.
+  if (d >= 60) return Math.round(d / 30) + "mo";
   return d + "d";
 }
 
@@ -6167,23 +6170,60 @@ function manualFiguresHtml(figs, idx) {
  * last card instead of rendering an undefined card or throwing.
  */
 const FC_POS_PREFIX = "mbbs_fc_pos:";
-function fcPosKey(lessonId) { return FC_POS_PREFIX + String(lessonId == null ? "" : lessonId); }
-function readFcPos(lessonId) {
+// `suffix` selects a view: the default (all cards) keeps the original key, the
+// due-only view gets its own so switching filters does not fight over one index.
+function fcPosKey(lessonId, suffix) {
+  const base = FC_POS_PREFIX + String(lessonId == null ? "" : lessonId);
+  return suffix && suffix !== "all" ? base + ":" + suffix : base;
+}
+// The stored position is { i, id }: the index for a fast path, and the card id so
+// the reader lands on the SAME CARD even if the list order moved underneath them.
+// A legacy plain-number value is still accepted (index only).
+function readFcPos(lessonId, suffix) {
   try {
-    const raw = localStorage.getItem(fcPosKey(lessonId));
+    const raw = localStorage.getItem(fcPosKey(lessonId, suffix));
     if (raw == null) return null;
-    const n = parseInt(raw, 10);
-    return Number.isFinite(n) ? n : null;
+    const trimmed = raw.trim();
+    if (/^-?\d+$/.test(trimmed)) return { i: parseInt(trimmed, 10), id: null };
+    const o = JSON.parse(trimmed);
+    if (!o || typeof o !== "object") return null;
+    return {
+      i: Number.isFinite(Number(o.i)) ? Math.floor(Number(o.i)) : 0,
+      id: o.id ? String(o.id) : null,
+    };
   } catch { return null; }        // storage disabled (private mode): just start at card 1
 }
-function writeFcPos(lessonId, idx) {
+function writeFcPos(lessonId, idx, suffix, cardId) {
   const n = Number.isFinite(Number(idx)) ? Math.max(0, Math.floor(Number(idx))) : 0;
-  try { localStorage.setItem(fcPosKey(lessonId), String(n)); } catch { /* private mode */ }
+  try {
+    localStorage.setItem(fcPosKey(lessonId, suffix), JSON.stringify({ i: n, id: cardId ? String(cardId) : null }));
+  } catch { /* private mode */ }
 }
 function clampFcPos(n, total) {
   const max = Math.max(0, (Number.isFinite(Number(total)) ? Math.floor(Number(total)) : 1) - 1);
   const i = Number.isFinite(Number(n)) ? Math.floor(Number(n)) : 0;
   return Math.max(0, Math.min(i, max));
+}
+// Where to start in `list`: the remembered card if it is still there, else the
+// remembered index clamped to the deck.
+function resolveFcPos(entry, list) {
+  if (!entry) return 0;
+  if (entry.id) {
+    const at = list.findIndex((c) => c && c.id === entry.id);
+    if (at >= 0) return at;
+  }
+  return clampFcPos(entry.i, list.length);
+}
+// Cards in a deterministic order: createdAt, then id. The list endpoint returns
+// rows in rowid order and the store does INSERT OR REPLACE, so grading a card
+// gives it a new rowid and it jumps to the END of the deck — the reader's "第 7
+// 张" became a different card after every grade. Sorting client-side makes the
+// deck reproducible no matter what the server's row order does.
+function compareCardOrder(a, b) {
+  const ca = a && a.createdAt ? a.createdAt : 0;
+  const cb = b && b.createdAt ? b.createdAt : 0;
+  if (ca !== cb) return ca - cb;
+  return String((a && a.id) || "").localeCompare(String((b && b.id) || ""));
 }
 
 function renderCardsTab(body, lesson, cards) {
@@ -6192,19 +6232,59 @@ function renderCardsTab(body, lesson, cards) {
     const b = $("#btn-gen3"); if (b) b.addEventListener("click", () => generateStudySet(currentLessonId));
     return;
   }
+  // Two views of the same deck:
+  //   all — every card in a deterministic order (createdAt, then id). This is
+  //         the original browse view, and it is what the saved position means.
+  //         It is deliberately NOT sorted by `due`: the tab is for browsing a
+  //         course, and the SM-2 schedule is served by 今日学习.
+  //   due — only the cards the scheduler says are due now, so "重复时间" has a
+  //         visible entry point instead of being invisible in this tab.
+  // `deck` is the sorted copy every index below refers to; `cards` stays the
+  // caller's array so grading still writes back to the record it came from.
+  const deck = cards.slice().sort(compareCardOrder);
+  let filter = "all";
+  const dueList = () => deck.filter((c) => isDue(c));
+  const view = () => (filter === "due" ? dueList() : deck);
   const stored = readFcPos(lesson.id);
-  let idx = clampFcPos(stored == null ? 0 : stored, cards.length);
+  let idx = resolveFcPos(stored, deck);
   let firstPaint = true;
+  // What the last grade did, so "完全忘了" can say out loud where (and when) the
+  // card comes back: this tab is a browse view and will NOT re-queue it.
+  let lastNote = null;
   let flipped = false, grading = false;
+  // What the scheduler thinks of this card, printed on every card so the repeat
+  // interval is something the reader can see rather than infer.
+  const schedLabel = (card) => {
+    const isNew = (card.reps || 0) === 0 && (card.lapses || 0) === 0;
+    const days = Math.ceil(((card.due || 0) - Date.now()) / 86400000);
+    const when = days <= 0 ? "今天到期" : `${days} 天后到期`;
+    return `${isNew ? "🆕 新卡" : "⏰"} ${when} · interval ${intervalLabel(card.interval)} · ease ${card.ease} · reps ${card.reps}`;
+  };
   const render = () => {
-    writeFcPos(lesson.id, idx);      // every move is persisted, so leaving the tab is safe
-    const card = cards[idx];
+    const list = view();
+    if (!list.length) {
+      body.innerHTML = emptyState("⏰", "今天没有到期的卡片。", `<div style="margin-top:14px"><button class="btn btn-accent" id="fc-f-all">看全部 ${deck.length} 张</button></div>`);
+      const all = $("#fc-f-all");
+      if (all) all.addEventListener("click", () => { filter = "all"; idx = resolveFcPos(readFcPos(lesson.id), deck); render(); });
+      return;
+    }
+    idx = clampFcPos(idx, list.length);
+    // every move is persisted (index + card id), so leaving the tab is safe
+    writeFcPos(lesson.id, idx, filter, list[idx] && list[idx].id);
+    const card = list[idx];
     const preview = [0, 1, 2, 3].map((g) => schedule(card, g));
     const backHint = firstPaint && stored != null && idx > 0 ? ` · 已回到上次第 ${idx + 1} 张` : "";
     firstPaint = false;
+    const dueN = dueList().length;
     body.innerHTML = `
       <div class="flashcard-wrap">
-        <div class="sub" style="text-align:center;margin-bottom:12px">第 ${idx + 1} / ${cards.length} 张 · 翻牌后评分（同今日学习）${backHint}</div>
+        <div class="sub" style="text-align:center;margin-bottom:8px">第 ${idx + 1} / ${list.length} 张 · 翻牌后评分（同今日学习）${backHint}</div>
+        <div style="display:flex;justify-content:center;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+          <button class="btn btn-sm ${filter === "all" ? "btn-accent" : "btn-ghost"}" id="fc-f-all" title="浏览视图：按卡片加入顺序（createdAt）固定排序，不按复习时间排序；排程请看「今日学习」">全部 ${deck.length}</button>
+          <button class="btn btn-sm ${filter === "due" ? "btn-accent" : "btn-ghost"}" id="fc-f-due" title="只显示 SM-2 排程里今天到期的卡片">⏰ 今天到期 ${dueN}</button>
+          <span class="sub" style="font-size:12px">${schedLabel(card)}</span>
+        </div>
+        ${lastNote ? `<div class="sub" style="text-align:center;font-size:12px;margin:-4px 0 12px;line-height:1.5">${lastNote} <button class="btn btn-sm btn-ghost" id="fc-go-review" style="margin-left:4px">🎯 去今日学习</button></div>` : ""}
         <div class="flashcard" id="fc">
           <div class="card-label">题目</div>
           <div class="card-text" id="fc-text"></div>
@@ -6228,38 +6308,77 @@ function renderCardsTab(body, lesson, cards) {
     text.className = "card-text";
     fc.querySelector(".card-label").textContent = "Question";
     text.innerHTML = mdFull(card.front);
-    fc.addEventListener("click", () => { if (!flipped) flip(); });
-    $("#fc-prev").addEventListener("click", () => { idx = (idx - 1 + cards.length) % cards.length; render(); });
-    $("#fc-next").addEventListener("click", () => { idx = (idx + 1) % cards.length; render(); });
+    fc.addEventListener("click", () => flip());
+    $("#fc-prev").addEventListener("click", () => { lastNote = null; const l = view(); idx = (idx - 1 + l.length) % l.length; render(); });
+    $("#fc-next").addEventListener("click", () => { lastNote = null; const l = view(); idx = (idx + 1) % l.length; render(); });
+    const fAll = $("#fc-f-all");
+    if (fAll) fAll.addEventListener("click", () => switchFilter("all"));
+    const fDue = $("#fc-f-due");
+    if (fDue) fDue.addEventListener("click", () => switchFilter("due"));
+    const goReview = $("#fc-go-review");
+    if (goReview) goReview.addEventListener("click", () => navigate("review"));
     body.querySelectorAll(".grade-btn").forEach((b) => b.addEventListener("click", () => grade(parseInt(b.dataset.g, 10))));
   };
+  const switchFilter = (f) => {
+    if (filter === f) return;
+    filter = f;
+    idx = resolveFcPos(readFcPos(lesson.id, f), view());
+    render();
+  };
+  // Clicking the card flips it, and clicking again flips it BACK: exactly one
+  // face is on screen at any moment (it used to stay on the answer forever).
   const flip = () => {
-    if (flipped) return;
-    flipped = true;
+    const card = view()[idx];
+    if (!card) return;
     const fc = $("#fc"), text = $("#fc-text");
-    fc.querySelector(".card-label").textContent = "Answer";
-    text.className = "card-text answer";
-    text.innerHTML = mdFull(cards[idx].back);
-    $("#fc-grades").hidden = false;
+    flipped = !flipped;
+    if (flipped) {
+      fc.querySelector(".card-label").textContent = "Answer";
+      text.className = "card-text answer";
+      text.innerHTML = mdFull(card.back);
+      $("#fc-grades").hidden = false;
+    } else {
+      fc.querySelector(".card-label").textContent = "Question";
+      text.className = "card-text";
+      text.innerHTML = mdFull(card.front);
+      $("#fc-grades").hidden = true;
+    }
   };
   const grade = async (g) => {
     if (!flipped || grading) return;
     if (blockTrialWrite()) return;
     grading = true;
-    const c = cards[idx];
+    const c = view()[idx];
     const updated = schedule(c, g);
     await db.put("cards", updated);
-    cards[idx] = updated;
+    const at = deck.findIndex((x) => x.id === c.id);
+    if (at >= 0) deck[at] = updated; else deck.push(updated);
+    const src = cards.findIndex((x) => x.id === c.id);
+    if (src >= 0) cards[src] = updated; else cards.push(updated);
+    // Say where the card went. "完全忘了" is due now (<10m) and 今日学习 puts it
+    // back ~8 items later — this browse tab never re-queues it, so pretending
+    // otherwise would be the actual bug behind "重复时间好像不起作用".
+    const names = ["完全忘了", "有点吃力", "说得清楚", "太简单了"];
+    lastNote = g === 0
+      ? `已评「完全忘了」：到期时间 ${intervalLabel(updated.interval)}（现在）。今日学习会把它放回队列（约 8 项之后再问一次）；这个浏览视图不会自动回来。`
+      : `已评「${names[g]}」：下次复习在 ${intervalLabel(updated.interval)} 后（今日学习按此排程出现）。`;
     grading = false;
-    idx = (idx + 1) % cards.length;
+    if (filter === "due") {
+      // The card just left the due list, so the next one slid into this index.
+      idx = clampFcPos(idx, view().length);
+    } else {
+      idx = (idx + 1) % deck.length;
+    }
     render();
   };
   // Keyboard: Space/Enter flip, 1-4 grade, ArrowLeft/Right switch.
   let kb = (e) => {
+    const l = view();
+    if (!l.length) return;
     if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); }
     else if (e.key === "1") grade(0); else if (e.key === "2") grade(1); else if (e.key === "3") grade(2); else if (e.key === "4") grade(3);
-    else if (e.code === "ArrowLeft") { idx = (idx - 1 + cards.length) % cards.length; render(); }
-    else if (e.code === "ArrowRight") { idx = (idx + 1) % cards.length; render(); }
+    else if (e.code === "ArrowLeft") { idx = (idx - 1 + l.length) % l.length; render(); }
+    else if (e.code === "ArrowRight") { idx = (idx + 1) % l.length; render(); }
   };
   document.addEventListener("keydown", kb);
   // cleanup on tab change / navigation: store handler to remove later.
@@ -9628,7 +9747,10 @@ function flipReviewCard() {
     if (reviewFlipped) {
       if (label) label.textContent = "答案";
       t.className = "card-text answer";
-      t.innerHTML = `<div class="r-q">${mdFull(card.front)}</div><div class="r-divider"></div><div class="r-a">${mdFull(card.back)}</div>`;
+      // One face at a time: the reveal shows the ANSWER only. It used to render
+      // the question again above a dashed divider, so "flip" put both sides on
+      // screen at once — exactly what the flashcard report described.
+      t.innerHTML = `<div class="r-a">${mdFull(card.back)}</div>`;
       if (rv) rv.hidden = true;
       if (g) g.hidden = false;
     } else {

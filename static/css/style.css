@@ -556,9 +556,14 @@ body.immersive .kp-group > summary.tree-l1 { font-size: 22px; }
   touch-action: none;
   opacity: 1;
   transition: opacity .2s ease, transform .2s ease;
-  pointer-events: auto;
-  /* A small opaque hit area is what makes it draggable; the transparent corners
-     of the PNG let clicks through because only the <img> is a pointer target. */
+  /* The box itself must NOT be a pointer target. It used to be, so its whole
+     132px column (and the timer floating above it) swallowed clicks meant for
+     whatever card button sat underneath — Playwright kept reporting
+     "<div id=\"pet-timer\"> subtree intercepts pointer events" while clicking a
+     right-edge button at the bottom of a lesson. Only the pieces that are
+     actually interactive take events back (the artwork below, and the timer's
+     own button); the rest of the box lets clicks through. */
+  pointer-events: none;
 }
 /* Collapsed: hidden, but only while the flag and the artwork agree (see the
    .show rule below — the two can never disagree). */
@@ -569,14 +574,16 @@ body.pet-hidden #pet { display: none; }
   display: block;
   filter: drop-shadow(0 6px 12px rgba(0,0,0,.22));
   transition: transform .18s ease;
-  /* Only the artwork is a pointer target, so the transparent corners of the box
-     do not eat clicks meant for the page. */
+  /* The artwork is the drag handle: it re-enables pointer events inside the
+     non-interactive box, and a pointerdown on it still bubbles to #pet. */
   pointer-events: auto;
   cursor: grab;
 }
-#pet:hover img { transform: scale(1.05); }
+/* Hover is on the image, not on #pet: the container no longer takes events, so
+   `#pet:hover` would never match. */
+#pet img:hover { transform: scale(1.05); }
 #pet.dragging { cursor: grabbing; }
-#pet.dragging img { transform: scale(1.08); }
+#pet.dragging img { cursor: grabbing; transform: scale(1.08); }
 #pet.pop img { animation: pet-pop .4s ease; }
 @keyframes pet-pop {
   0% { transform: scale(1); }
@@ -630,9 +637,13 @@ body.pet-hidden #pet { display: none; }
   box-shadow: 0 4px 14px rgba(0,0,0,.12);
   text-align: right;
   line-height: 1.5;
+  /* The panel floats above the pet and overlaps card buttons behind it. It is
+     read-only text plus one button, so the panel lets events through and only
+     that button takes them back. */
+  pointer-events: none;
 }
 #pet-today { font-weight: 600; color: var(--text-2); white-space: nowrap; }
-#pet-pomo-btn { margin-top: 4px; padding: 2px 8px; font-size: 11.5px; }
+#pet-pomo-btn { margin-top: 4px; padding: 2px 8px; font-size: 11.5px; pointer-events: auto; }
 #pet-pomo-btn.running { color: var(--red); border-color: var(--red); }
 #pet-pomo-mini {
   position: fixed;

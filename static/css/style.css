@@ -244,6 +244,23 @@ a { color: var(--accent); }
 .flashcard .card-text { font-size: 20px; font-weight: 600; line-height: 1.5; }
 .flashcard .card-text.answer { font-size: 17px; font-weight: 500; color: var(--brand-dark); }
 
+/* ---------- Flashcard figures ----------
+   The card's courseware picture sits above it: on the question side alone, on
+   the answer side with its caption. Page renders are capped smaller than cropped
+   figures so a full slide cannot take over the card. */
+.fc-fig { text-align: center; margin: 0 0 12px; }
+.fc-fig img {
+  max-width: 100%; max-height: 190px; object-fit: contain;
+  border: 1px solid var(--border); border-radius: 12px; background: #fff;
+  box-shadow: var(--shadow); cursor: zoom-in;
+}
+.fc-fig-page img { max-height: 150px; }
+.fc-fig figcaption {
+  font-size: 12px; color: var(--text-2); margin-top: 6px; line-height: 1.45;
+  max-width: 520px; margin-left: auto; margin-right: auto;
+}
+.fc-fig-dot { margin-left: 4px; }
+
 /* ---------- Flashcard chrome: progress, filters, checklist ----------
    The tab stacks a lot of small things above the card (progress, four status
    counts, three filters, a jump button and the checklist). They are grouped

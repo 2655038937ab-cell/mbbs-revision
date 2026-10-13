@@ -531,7 +531,73 @@ const reviewState = (page) => page.evaluate(() => {
     "due cards first (most recently due first), then unseen in lecture order, then seen-but-not-due");
   await pl.close();
 
-  const allErrs = [...errs, ...e2, ...e3, ...e4, ...e5, ...e6, ...e7, ...e9];
+  // ---------- M. 配图：有图的卡有 img、没图的无占位、只渲染当前卡、懒加载 ----------
+  console.log("\n=== M. card figures: lazy per lesson, only the current card ===");
+  const FIG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const figDeck = [
+    { id: "zz-fig-yes", lessonId: LESSON, front: "FIG CARD (has a figure)", back: "FIG ANSWER", ease: 2.5, interval: 0, reps: 0, lapses: 0, due: Date.now(), createdAt: Date.now() - 1000, source: "", src: { idx: 0, slide: 1, title: "P1" } },
+    { id: "zz-fig-no", lessonId: LESSON, front: "NO FIG CARD", back: "NO FIG ANSWER", ease: 2.5, interval: 0, reps: 0, lapses: 0, due: Date.now(), createdAt: Date.now() - 500, source: "", src: { idx: 1, slide: 5, title: "P2" } },
+  ];
+  const imagesRec = { id: LESSON, lessonId: LESSON, slides: Array.from({ length: 80 }, (_, i) => ({ images: i === 0 ? [{ kind: "figure", dataUrl: FIG, name: "f1", mime: "image/png", caption: { caption: "CAPTION TEXT", takeaway: "TAKEAWAY TEXT" } }] : [] })) };
+  const pm = await ctx.newPage();
+  const e10 = [];
+  let imgReq = 0;
+  pm.on("pageerror", (e) => e10.push(String(e).slice(0, 200)));
+  pm.on("console", (m) => { if (m.type() === "error") e10.push("console: " + m.text().slice(0, 200)); });
+  pm.on("request", (r) => { if (/\/api\/store\/lessonImages\//.test(r.url())) imgReq++; });
+  await pm.route(/\/api\/store\/cards(\?|$)/, async (route) => {
+    const resp = await route.fetch(); const body = await resp.json();
+    await route.fulfill({ response: resp, body: JSON.stringify({ ...(body.items ? body : {}), items: figDeck }) });
+  });
+  await pm.route(/\/api\/store\/lessonImages\//, async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ item: imagesRec }) });
+  });
+  await pm.goto(BASE + "/", { waitUntil: "domcontentloaded" });
+  await pm.waitForTimeout(2000);
+  const beforeTab = imgReq;
+  await pm.locator("text=📚").first().click().catch(() => {});
+  await pm.waitForTimeout(900);
+  await pm.locator(`.lesson-item[data-id="${LESSON}"]`).first().click();
+  const tabM = pm.locator('#view .tab[data-tab="cards"]').first();
+  await tabM.waitFor({ state: "visible", timeout: 25000 });
+  const beforeCards = imgReq;
+  await tabM.click();
+  await pm.waitForTimeout(1800);
+  console.log(`  lessonImages requests: before the cards tab = ${beforeCards}, after = ${imgReq}`);
+  ok(beforeCards === 0 && imgReq === 1, "lessonImages is fetched only when the flashcards open (0 -> 1)");
+  const figState = () => pm.evaluate(() => {
+    const host = document.querySelector("#fc-fig");
+    const img = host ? host.querySelector("img") : null;
+    return {
+      hasImg: !!img, src: img ? img.getAttribute("src") : null,
+      box: host ? Math.round(host.getBoundingClientRect().height) : null,
+      wrapImgs: document.querySelectorAll("#tab-body .flashcard-wrap img").length,
+      listImgs: document.querySelectorAll("#tab-body [data-fc-jump] img").length,
+      caption: host && host.querySelector("figcaption") ? host.querySelector("figcaption").textContent.trim() : null,
+    };
+  });
+  let st = await figState();
+  console.log(`  card 1 (slide 1): img=${st.hasImg} prefix=${st.src ? st.src.slice(0, 40) : "-"} (expected ${FIG.slice(0, 40)})`);
+  ok(st.hasImg && st.src === FIG, "the card with a figure shows exactly that figure's dataUrl");
+  ok(st.wrapImgs === 1, `only the current card's image is in the DOM (wrap imgs = ${st.wrapImgs})`);
+  await pm.locator("#fc").click();
+  await pm.waitForTimeout(350);
+  st = await figState();
+  console.log(`  after flip: caption=${JSON.stringify(st.caption)}`);
+  ok(!!st.caption && /CAPTION TEXT/.test(st.caption) && /TAKEAWAY TEXT/.test(st.caption), "the answer side shows the figure's caption + takeaway");
+  await pm.locator("#fc-list-btn").click();
+  await pm.waitForTimeout(400);
+  const listInfo = await pm.evaluate(() => ({ rows: document.querySelectorAll("#tab-body [data-fc-jump]").length, dots: document.querySelectorAll("#tab-body .fc-fig-dot").length, imgs: document.querySelectorAll("#tab-body [data-fc-jump] img").length }));
+  console.log(`  checklist: ${listInfo.rows} rows, ${listInfo.dots} 🖼 markers, ${listInfo.imgs} images`);
+  ok(listInfo.dots === 1 && listInfo.imgs === 0, "the checklist marks the card that has a figure and holds no images");
+  await pm.locator("#fc-next").click();
+  await pm.waitForTimeout(500);
+  st = await figState();
+  console.log(`  card 2 (slide 5, no figure): img=${st.hasImg} host height=${st.box} wrap imgs=${st.wrapImgs}`);
+  ok(!st.hasImg && st.box === 0 && st.wrapImgs === 0, "a card whose slide has no figure shows no image and no empty box");
+  await pm.close();
+
+  const allErrs = [...errs, ...e2, ...e3, ...e4, ...e5, ...e6, ...e7, ...e9, ...e10];
   console.log(`\npage errors: ${allErrs.length ? JSON.stringify(allErrs) : "none"}`);
   if (allErrs.length) { failures++; process.exitCode = 1; }
 

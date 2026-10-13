@@ -6241,6 +6241,87 @@ function writeFcPos(lessonId, idx, suffix, cardId) {
     localStorage.setItem(fcPosKey(lessonId, suffix), JSON.stringify({ i: n, id: cardId ? String(cardId) : null }));
   } catch { /* private mode */ }
 }
+/* ---------------- Flashcard figures ----------------
+ * A card's picture is the courseware image of the slide it came from: the card's
+ * src anchor (src.slide, else the slide of the point at src.idx) or, for older
+ * cards, the matched point's slide. A cropped figure wins; a whole-page render is
+ * the fallback for decks the parser never cropped.
+ *
+ * lessonImages holds data URLs (megabytes per course), so it is fetched only when
+ * a course's flashcards are actually opened and cached per lesson for the
+ * session — and only the CURRENT card's image is ever put in the DOM.
+ */
+const fcImagesCache = new Map();
+function ensureLessonImages(lessonId) {
+  const key = String(lessonId == null ? "" : lessonId);
+  if (fcImagesCache.has(key)) return Promise.resolve(fcImagesCache.get(key));
+  fcImagesCache.set(key, null);          // one request per lesson, even while in flight
+  return db.get("lessonImages", key).catch(() => null).then((rec) => {
+    fcImagesCache.set(key, rec || {});
+    return fcImagesCache.get(key);
+  });
+}
+function fcSlideNumber(card, lesson, pointIdx) {
+  const src = (card && card.src) || null;
+  const pts = (lesson && lesson.points) || [];
+  if (src && Number.isFinite(src.slide)) return Number(src.slide);
+  const i = src && Number.isFinite(src.idx) ? Number(src.idx) : pointIdx;
+  if (Number.isFinite(i) && pts[i] && Number.isFinite(pts[i].slide)) return Number(pts[i].slide);
+  return null;
+}
+function fcFigure(images, lesson, slideNum) {
+  if (!images || !Array.isArray(images.slides) || slideNum == null) return null;
+  const slides = (lesson && lesson.slides) || [];
+  const at = slides.findIndex((sl) => Number(sl && sl.index) === Number(slideNum));
+  // lessonImages mirrors lesson.slides positionally and usually carries no index.
+  const rec = images.slides[at >= 0 ? at : Number(slideNum) - 1];
+  const imgs = ((rec && rec.images) || []).filter((im) => im && im.dataUrl);
+  return imgs.find((im) => im.kind === "figure") || imgs.find((im) => im.kind === "page") || null;
+}
+function fcFigureCaption(im) {
+  const c = im && im.caption;
+  if (!c) return "";
+  const a = String(c.caption || "").trim();
+  const b = String(c.takeaway || "").trim();
+  return [a, b && b !== a ? b : ""].filter(Boolean).join(" · ");
+}
+// Put `card`'s picture into the host — and nothing else. The host carries the
+// card id it was built for, so a slow load can never paint onto the next card.
+function paintCardFigure(hostId, card, lesson, pointIdx, withCaption) {
+  const paintWith = (images) => {
+    const host = document.getElementById(hostId);
+    if (!host || !card || host.dataset.card !== String(card.id)) return;
+    const im = fcFigure(images, lesson, fcSlideNumber(card, lesson, pointIdx));
+    if (!im) { host.innerHTML = ""; return; }
+    const cap = withCaption ? fcFigureCaption(im) : "";
+    host.innerHTML = `<figure class="fc-fig${im.kind === "page" ? " fc-fig-page" : ""}" title="点击放大">`
+      + `<img src="${im.dataUrl}" alt="">`
+      + (cap ? `<figcaption>${mdInline(cap)}</figcaption>` : "")
+      + `</figure>`;
+    const img = host.querySelector("img");
+    if (!img) return;
+    img.addEventListener("error", () => { host.innerHTML = ""; });   // silent downgrade
+    img.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      openModal(`<img src="${im.dataUrl}" style="max-width:100%;max-height:80vh;object-fit:contain;border-radius:10px">`);
+    });
+  };
+  const key = String(lesson && lesson.id);
+  const cached = fcImagesCache.get(key);
+  if (cached) paintWith(cached);
+  else ensureLessonImages(key).then(paintWith).catch(() => {});
+}
+// 🖼 marker on the checklist rows whose card has a picture. `list` is the view the
+// rows were built from, so row i really is list[i].
+function markFigureRows(images, lesson, list, pointIndex) {
+  document.querySelectorAll("[data-fc-jump]").forEach((row) => {
+    const c = list[Number(row.dataset.fcJump)];
+    if (!c || row.querySelector(".fc-fig-dot")) return;
+    if (!fcFigure(images, lesson, fcSlideNumber(c, lesson, pointIndex && pointIndex.get(c.id)))) return;
+    row.insertAdjacentHTML("beforeend", `<span class="fc-fig-dot" title="这张卡有配图">🖼</span>`);
+  });
+}
+
 function clampFcPos(n, total) {
   const max = Math.max(0, (Number.isFinite(Number(total)) ? Math.floor(Number(total)) : 1) - 1);
   const i = Number.isFinite(Number(n)) ? Math.floor(Number(n)) : 0;
@@ -6435,6 +6516,7 @@ function renderCardsTab(body, lesson, cards) {
         <div class="fc-pos" id="fc-pos">第 ${idx + 1} / ${list.length} 张 · ${st.label}${isDue(card) ? " · 🔁 今天到期" : ""}${backHint} <span id="fc-sched">${schedLabel(card)}</span></div>
         ${listOpen ? `<div class="fc-list" id="fc-list">${checklist}</div>` : ""}
         ${lastNote ? `<div class="fc-note">${lastNote} <button class="btn btn-sm btn-ghost" id="fc-go-review">🎯 去今日学习</button></div>` : ""}
+        <div class="fc-fig" id="fc-fig" data-card="${card.id}"></div>
         <div class="flashcard" id="fc">
           <div class="card-label">题目</div>
           <div class="card-text" id="fc-text"></div>
@@ -6492,6 +6574,12 @@ function renderCardsTab(body, lesson, cards) {
     const goReview = $("#fc-go-review");
     if (goReview) goReview.addEventListener("click", () => navigate("review"));
     body.querySelectorAll(".grade-btn").forEach((b) => b.addEventListener("click", () => grade(parseInt(b.dataset.g, 10))));
+    // Picture: front gets the image alone, the answer adds its caption. Only this
+    // card's image is painted, and the checklist gains a 🖼 where one exists.
+    paintCardFigure("fc-fig", card, lesson, pointIndex.get(card.id), flipped);
+    const cachedFigs = fcImagesCache.get(String(lesson.id));
+    if (cachedFigs) markFigureRows(cachedFigs, lesson, list, pointIndex);
+    else ensureLessonImages(lesson.id).then((imgs) => markFigureRows(imgs, lesson, list, pointIndex)).catch(() => {});
   };
   const switchFilter = (f) => {
     if (filter === f) return;
@@ -6517,6 +6605,9 @@ function renderCardsTab(body, lesson, cards) {
       text.innerHTML = mdFull(card.front);
       $("#fc-grades").hidden = true;
     }
+    // Front: the picture alone ("look at it, recall the answer"); answer: the
+    // picture plus its caption.
+    paintCardFigure("fc-fig", card, lesson, pointIndex.get(card.id), flipped);
   };
   const grade = async (g) => {
     if (!flipped || grading) return;
@@ -9799,6 +9890,7 @@ function showReviewCard() {
     const lessonTitle = reviewLessonMap[card.lessonId] || "";
     $("#view").innerHTML = head + `
       <div class="review-stage">
+        <div class="fc-fig" id="r-fig" data-card="${card.id}"></div>
         <div class="flashcard" id="r-fc">
           ${lessonTitle ? `<div style="margin-bottom:12px"><span class="pill pill-gray">📚 ${escapeHtml(lessonTitle)}</span></div>` : ""}
           <div class="card-label" id="r-label">题目</div>
@@ -9817,6 +9909,9 @@ function showReviewCard() {
       </div>`;
     $("#r-text").innerHTML = mdFull(card.front);
     $("#r-fc").addEventListener("click", flipReviewCard);
+    // Same lazy per-lesson picture as the 🃏 tab: only this card's image, and the
+    // caption appears with the answer.
+    paintCardFigure("r-fig", card, null, null, false);
     $("#r-reveal").addEventListener("click", flipReviewCard);
     $("#view").querySelectorAll(".grade-btn").forEach((b) => b.addEventListener("click", () => gradeStudyEntry(parseInt(b.dataset.g, 10))));
     return;
@@ -9926,6 +10021,7 @@ function flipReviewCard() {
     const t = $("#r-text");
     const rv = $("#r-reveal");
     const g = $("#r-grades");
+    paintCardFigure("r-fig", card, null, null, reviewFlipped);
     if (reviewFlipped) {
       if (label) label.textContent = "答案";
       t.className = "card-text answer";

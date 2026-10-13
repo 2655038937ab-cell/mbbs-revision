@@ -14,6 +14,13 @@ filters). 口径与进度页一致：做过 = `reps >= 1`，成熟 = `interval >
 实测：合成牌组 [due oldest, due newest, due middle, unseen idx5, unseen idx1, seen-not-due]
 渲染为 due newest → due middle → due oldest → unseen idx1 → unseen idx5 → seen-not-due。
 
+**配图**：卡上显示它对应课件的图。取图规则 `src.slide` → `src.idx` 对应知识点的
+`point.slide` → 老卡用匹配到的知识点；优先 `kind === "figure"`，没有就用该页
+`kind === "page"` 整页图（更小的尺寸上限）。`lessonImages`（每课十几 MB 的 dataUrl）
+**只在打开该课闪卡时才请求**（一次、按课缓存），DOM 里**只放当前卡的图**，切卡即释放；
+有配图的清单行加 🖼；点击图片可放大；加载失败静默清空、不留空框。正面只显示图，
+背面显示图 + caption（说明 · takeaway）。今日学习的闪卡同样处理。
+
 ## How it works
 
 * Playwright with `serviceWorkers: "block"`.

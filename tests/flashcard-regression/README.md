@@ -1,5 +1,10 @@
 # Flashcard regression suite (闪卡)
 
+The 闪卡 tab also shows progress (已看 X / 共 Y, a bar, 🆕 没看过 / 🌱 学习中 / 🔁 今天到期 /
+🌳 已成熟, a collapsible card checklist and the 只看没看过的 / 今天到期 / 全部
+filters). 口径与进度页一致：看过 = `reps >= 1`，成熟 = `interval >= 21`；
+今天到期 = `due <= now`（独立的排程标记，新卡天然到期，所以与「没看过」重叠）。
+
 One command:
 
 ```bash
@@ -22,6 +27,7 @@ touching `renderCardsTab` / `flipReviewCard` / `schedule` / `previewIntervals` /
 | F | SM-2 write path: grading "说得清楚" in the tab writes `interval`/`due`/`reps`/`ease` (0→1, reps 0→1, due in the future) |
 | H | the four buttons' intervals equal an **independently recomputed** SM-2 table for a new / learning / mature card, and are strictly monotonic (Again < Hard < Good < Easy) with Good growing past Hard for non-new cards |
 | I | **"完全忘了"** writes `interval 0`, `reps 0`, `due ≈ now` (the `<10m` on the button) and the card is re-queued by 今日学习 **8 queue positions later** (7 cards in between, `REQUEUE_GAP = 8`) |
+| K | **进度数字 == 独立复算**: on a synthetic deck (2 new / 2 learning / 2 mature, 5 due) the page's 已看 / 没看过 / 学习中 / 今天到期 / 已成熟 all equal the recomputed counts, the bar is 已看/总数 (±1%), the checklist has one row per card, 「只看没看过的」 narrows to the new count and 「跳到第一张没看过的」 lands on the first `reps=0` card |
 | J | the flashcard tab says out loud that an Again card comes back in 今日学习 (with a 🎯 entry point) and does **not** return within the browse view's next 10 cards |
 
 ## Why the position/or order checks exist

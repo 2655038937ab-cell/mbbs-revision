@@ -63,8 +63,8 @@ const faceState = (page) => page.evaluate(() => {
     nVisibleFaces: faces.length,
     nFacesInDom: wrap.querySelectorAll(".card-text").length,
     text: faces.length ? faces[0].textContent.replace(/\s+/g, " ").trim().slice(0, 20) : null,
-    header: wrap.querySelector(".sub") ? wrap.querySelector(".sub").textContent.trim().slice(0, 40) : null,
-    sched: wrap.querySelectorAll(".sub")[1] ? wrap.querySelectorAll(".sub")[1].textContent.trim() : null,
+    header: wrap.querySelector("#fc-pos") ? wrap.querySelector("#fc-pos").textContent.trim().slice(0, 40) : null,
+    sched: wrap.querySelector("#fc-sched") ? wrap.querySelector("#fc-sched").textContent.trim() : null,
     gradesHidden: wrap.querySelector("#fc-grades") ? wrap.querySelector("#fc-grades").hidden : null,
   };
 });
@@ -379,7 +379,80 @@ const reviewState = (page) => page.evaluate(() => {
   console.log(`  restore graded card: ${md5(back2) === snap2md5 ? "RESTORED ✓" : "MISMATCH ✗"}`);
   ok(md5(back2) === snap2md5, "the Again-graded card was restored byte-for-byte");
 
-  const allErrs = [...errs, ...e2, ...e3, ...e4, ...e5];
+  // ---------- K. progress numbers == an independent recomputation ----------
+  console.log("\n=== K. 进度数字 == 独立复算（合成卡组，只读） ===");
+  const nowK = Date.now();
+  const mkK = (id, front, reps, interval, due) => ({ id, front, back: front + " B", lessonId: LESSON, ease: 2.5, reps, interval, lapses: 0, due, createdAt: nowK - 100000 + Number(id.slice(-1)) * 1000, source: "" });
+  const deckK = [
+    mkK("zz-k0", "NEW ONE", 0, 0, nowK - 1000),
+    mkK("zz-k1", "NEW TWO", 0, 0, nowK - 1000),
+    mkK("zz-k2", "LEARNING ONE", 2, 3, nowK - 1000),
+    mkK("zz-k3", "LEARNING TWO", 3, 5, nowK - 1000),
+    mkK("zz-k4", "MATURE ONE", 5, 30, nowK + 86400000),
+    mkK("zz-k5", "MATURE TWO", 6, 45, nowK - 1000),
+  ];
+  const expectK = {
+    total: deckK.length,
+    seen: deckK.filter((c) => c.reps >= 1).length,
+    newN: deckK.filter((c) => c.reps < 1).length,
+    learning: deckK.filter((c) => c.reps >= 1 && c.interval < 21).length,
+    mature: deckK.filter((c) => c.interval >= 21).length,
+    due: deckK.filter((c) => c.due <= nowK).length,
+  };
+  console.log(`  独立复算: ${JSON.stringify(expectK)}`);
+  const pk = await ctx.newPage();
+  const e6 = [];
+  pk.on("pageerror", (e) => e6.push(String(e).slice(0, 200)));
+  pk.on("console", (m) => { if (m.type() === "error") e6.push("console: " + m.text().slice(0, 200)); });
+  await pk.route(/\/api\/store\/cards(\?|$)/, async (route) => {
+    const resp = await route.fetch(); const body = await resp.json();
+    await route.fulfill({ response: resp, body: JSON.stringify({ ...(body.items ? body : {}), items: deckK }) });
+  });
+  await openCardsTab(pk, LESSON, true);
+  const gotK = await pk.evaluate(() => {
+    const wrap = document.querySelector("#tab-body .flashcard-wrap");
+    const txt = wrap ? wrap.innerText : "";
+    const m = txt.match(/已看\s*(\d+)\s*\/\s*共\s*(\d+)\s*张/);
+    const n = (re) => { const x = txt.match(re); return x ? Number(x[1]) : null; };
+    const bar = document.querySelector("#fc-bar");
+    const track = bar ? bar.parentElement.getBoundingClientRect().width : 0;
+    return {
+      seen: m ? Number(m[1]) : null, total: m ? Number(m[2]) : null,
+      newN: n(/没看过\s*(\d+)/), learning: n(/学习中\s*(\d+)/), due: n(/今天到期\s*(\d+)/), mature: n(/已成熟\s*(\d+)/),
+      barPct: track ? Math.round((bar.getBoundingClientRect().width / track) * 1000) / 10 : null,
+      rows: document.querySelectorAll("#tab-body [data-fc-jump]").length,
+      newChip: (document.querySelector("#fc-f-new") || {}).textContent || "",
+    };
+  });
+  console.log(`  页面显示: ${JSON.stringify(gotK)}`);
+  ok(gotK.seen === expectK.seen && gotK.total === expectK.total, `已看 ${gotK.seen}/${gotK.total} == ${expectK.seen}/${expectK.total}`);
+  ok(gotK.newN === expectK.newN, `没看过 ${gotK.newN} == ${expectK.newN}`);
+  ok(gotK.learning === expectK.learning, `学习中 ${gotK.learning} == ${expectK.learning}`);
+  ok(gotK.mature === expectK.mature, `已成熟 ${gotK.mature} == ${expectK.mature}`);
+  ok(gotK.due === expectK.due, `今天到期 ${gotK.due} == ${expectK.due}`);
+  const wantK = Math.round((expectK.seen / expectK.total) * 1000) / 10;
+  ok(Math.abs(gotK.barPct - wantK) <= 1, `进度条 ${gotK.barPct}% == 已看/总数 ${wantK}% (±1%)`);
+  ok(gotK.rows === expectK.total, `清单行数 ${gotK.rows} == 总卡数 ${expectK.total}`);
+  // 只看没看过的: rows drop to the new count, jump lands on the first new card
+  await pk.locator("#fc-f-new").click();
+  await pk.waitForTimeout(400);
+  const filtered = await pk.evaluate(() => ({
+    rows: document.querySelectorAll("#tab-body [data-fc-jump]").length,
+    header: (document.querySelector("#tab-body .flashcard-wrap .sub") || {}).textContent || null,
+  }));
+  console.log(`  只看没看过的: rows=${filtered.rows} header=${JSON.stringify(filtered.header)}`);
+  ok(filtered.rows === expectK.newN, `只看没看过的 rows ${filtered.rows} == 没看过 ${expectK.newN}`);
+  await pk.locator("#fc-f-all").click();
+  await pk.waitForTimeout(300);
+  await pk.locator("#fc-jump-new").click();
+  await pk.waitForTimeout(400);
+  const jumped = await parsedPos(pk, LESSON);
+  const firstNew = deckK.slice().sort(cmpOrder).find((c) => c.reps < 1);
+  console.log(`  跳到第一张没看过的 -> ${JSON.stringify(jumped)} expected ${firstNew.id}`);
+  ok(jumped && jumped.id === firstNew.id, "跳到第一张没看过的 lands on the first reps=0 card");
+  await pk.close();
+
+  const allErrs = [...errs, ...e2, ...e3, ...e4, ...e5, ...e6];
   console.log(`\npage errors: ${allErrs.length ? JSON.stringify(allErrs) : "none"}`);
   if (allErrs.length) { failures++; process.exitCode = 1; }
 

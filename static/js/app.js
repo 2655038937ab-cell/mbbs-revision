@@ -6244,7 +6244,8 @@ function renderCardsTab(body, lesson, cards) {
   const deck = cards.slice().sort(compareCardOrder);
   let filter = "all";
   const dueList = () => deck.filter((c) => isDue(c));
-  const view = () => (filter === "due" ? dueList() : deck);
+  const newList = () => deck.filter((c) => !((c.reps || 0) >= 1));
+  const view = () => (filter === "due" ? dueList() : filter === "new" ? newList() : deck);
   const stored = readFcPos(lesson.id);
   let idx = resolveFcPos(stored, deck);
   let firstPaint = true;
@@ -6260,10 +6261,43 @@ function renderCardsTab(body, lesson, cards) {
     const when = days <= 0 ? "今天到期" : `${days} 天后到期`;
     return `${isNew ? "🆕 新卡" : "⏰"} ${when} · interval ${intervalLabel(card.interval)} · ease ${card.ease} · reps ${card.reps}`;
   };
+  // The same two definitions the progress page uses: 看过 = reps >= 1,
+  // 成熟 = interval >= 21 days. 今天到期 is a separate scheduling flag (a new
+  // card is due by definition, so the buckets deliberately overlap).
+  const isSeen = (c) => (c.reps || 0) >= 1;
+  const isMature = (c) => (c.interval || 0) >= 21;
+  const statusOf = (c) => {
+    if (isMature(c)) return { key: "mature", label: "🌳 已成熟", dot: "🌳" };
+    if (isSeen(c)) return { key: "learning", label: "🌱 学习中", dot: "🌱" };
+    return { key: "new", label: "🆕 没看过", dot: "🆕" };
+  };
+  let listOpen = false;   // keep the checklist expanded across re-renders
   const render = () => {
     const list = view();
+    // Progress numbers, computed from the whole deck (never from the filter).
+    const total = deck.length;
+    const seenN = deck.filter(isSeen).length;
+    const newN = total - seenN;
+    const matureN = deck.filter(isMature).length;
+    const learningN = seenN - matureN;
+    const dueN = dueList().length;
+    const pct = total ? Math.round((seenN / total) * 1000) / 10 : 0;
+    const progressHtml = `
+      <div id="fc-progress" style="margin-bottom:10px">
+        <div class="sub" style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12.5px;margin-bottom:4px;flex-wrap:wrap">
+          <span>已看 <b>${seenN}</b> / 共 <b>${total}</b> 张</span>
+          <span title="口径（与进度页一致）：没看过 = reps=0；学习中 = 看过且 interval&lt;21 天；已成熟 = interval≥21 天；今天到期 = due≤现在（独立的排程标记，新卡天然到期，所以会和「没看过」重叠）">
+            🆕 没看过 ${newN} · 🌱 学习中 ${learningN} · 🔁 今天到期 ${dueN} · 🌳 已成熟 ${matureN}
+          </span>
+        </div>
+        <div style="height:8px;border-radius:6px;background:var(--surface-2,#eef2f7);overflow:hidden">
+          <div id="fc-bar" style="height:100%;width:${pct}%;background:var(--brand,#2563eb);transition:width .2s"></div>
+        </div>
+      </div>`;
     if (!list.length) {
-      body.innerHTML = emptyState("⏰", "今天没有到期的卡片。", `<div style="margin-top:14px"><button class="btn btn-accent" id="fc-f-all">看全部 ${deck.length} 张</button></div>`);
+      body.innerHTML = `<div class="flashcard-wrap">${progressHtml}` +
+        emptyState(filter === "new" ? "🆕" : "⏰", filter === "new" ? "这门课的卡都看过了。" : "今天没有到期的卡片。",
+          `<div style="margin-top:14px"><button class="btn btn-accent" id="fc-f-all">看全部 ${deck.length} 张</button></div>`) + `</div>`;
       const all = $("#fc-f-all");
       if (all) all.addEventListener("click", () => { filter = "all"; idx = resolveFcPos(readFcPos(lesson.id), deck); render(); });
       return;
@@ -6275,16 +6309,31 @@ function renderCardsTab(body, lesson, cards) {
     const preview = [0, 1, 2, 3].map((g) => schedule(card, g));
     const backHint = firstPaint && stored != null && idx > 0 ? ` · 已回到上次第 ${idx + 1} 张` : "";
     firstPaint = false;
-    const dueN = dueList().length;
+    const st = statusOf(card);
+    const checklist = list.map((c, i) => {
+      const s = statusOf(c);
+      const frontText = String(c.front || "").replace(/\s+/g, " ").trim().slice(0, 30);
+      return `<div data-fc-jump="${i}" title="${isDue(c) ? "今天到期" : ""}" style="display:flex;gap:8px;align-items:center;padding:5px 9px;cursor:pointer;border-bottom:1px solid var(--border);${i === idx ? "background:var(--surface-2,#eef2f7);font-weight:600" : ""}">`
+        + `<span class="sub" style="min-width:30px;text-align:right">${i + 1}</span>`
+        + `<span title="${s.label}">${s.dot}${isDue(c) ? "🔁" : ""}</span>`
+        + `<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(frontText)}</span></div>`;
+    }).join("");
     body.innerHTML = `
       <div class="flashcard-wrap">
-        <div class="sub" style="text-align:center;margin-bottom:8px">第 ${idx + 1} / ${list.length} 张 · 翻牌后评分（同今日学习）${backHint}</div>
+        ${progressHtml}
+        <div class="sub" id="fc-pos" style="text-align:center;margin-bottom:8px">第 ${idx + 1} / ${list.length} 张 · <span title="当前卡状态">${st.label}${isDue(card) ? " · 🔁 今天到期" : ""}</span> · 翻牌后评分（同今日学习）${backHint}</div>
         <div style="display:flex;justify-content:center;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
           <button class="btn btn-sm ${filter === "all" ? "btn-accent" : "btn-ghost"}" id="fc-f-all" title="浏览视图：按卡片加入顺序（createdAt）固定排序，不按复习时间排序；排程请看「今日学习」">全部 ${deck.length}</button>
+          <button class="btn btn-sm ${filter === "new" ? "btn-accent" : "btn-ghost"}" id="fc-f-new" title="只看没看过的（reps = 0）">🆕 只看没看过的 ${newN}</button>
           <button class="btn btn-sm ${filter === "due" ? "btn-accent" : "btn-ghost"}" id="fc-f-due" title="只显示 SM-2 排程里今天到期的卡片">⏰ 今天到期 ${dueN}</button>
-          <span class="sub" style="font-size:12px">${schedLabel(card)}</span>
+          ${newN ? `<button class="btn btn-sm btn-ghost" id="fc-jump-new" title="跳到第一张没看过的卡">⏭ 跳到第一张没看过的</button>` : ""}
+          <span class="sub" id="fc-sched" style="font-size:12px">${schedLabel(card)}</span>
         </div>
         ${lastNote ? `<div class="sub" style="text-align:center;font-size:12px;margin:-4px 0 12px;line-height:1.5">${lastNote} <button class="btn btn-sm btn-ghost" id="fc-go-review" style="margin-left:4px">🎯 去今日学习</button></div>` : ""}
+        <details id="fc-list" style="margin-bottom:12px"${listOpen ? " open" : ""}>
+          <summary class="sub" style="cursor:pointer;font-size:12.5px">📋 卡片清单（${list.length} 张，点击跳转）</summary>
+          <div style="max-height:240px;overflow:auto;margin-top:6px;border:1px solid var(--border);border-radius:8px">${checklist}</div>
+        </details>
         <div class="flashcard" id="fc">
           <div class="card-label">题目</div>
           <div class="card-text" id="fc-text"></div>
@@ -6315,6 +6364,30 @@ function renderCardsTab(body, lesson, cards) {
     if (fAll) fAll.addEventListener("click", () => switchFilter("all"));
     const fDue = $("#fc-f-due");
     if (fDue) fDue.addEventListener("click", () => switchFilter("due"));
+    const fNew = $("#fc-f-new");
+    if (fNew) fNew.addEventListener("click", () => switchFilter("new"));
+    const jumpNew = $("#fc-jump-new");
+    if (jumpNew) jumpNew.addEventListener("click", () => {
+      // First card in the deck order that has never been reviewed.
+      const at = deck.findIndex((c) => !isSeen(c));
+      if (at < 0) return;
+      filter = "all";
+      idx = at;
+      lastNote = null;
+      render();
+    });
+    const listEl = $("#fc-list");
+    if (listEl) listEl.addEventListener("toggle", () => { listOpen = listEl.open; });
+    body.querySelectorAll("[data-fc-jump]").forEach((row) => row.addEventListener("click", () => {
+      const at = Number(row.dataset.fcJump);
+      // The checklist row index addresses the CURRENT view, so a filtered list
+      // jumps within its own filter (the saved position is per filter).
+      const l = view();
+      if (!Number.isFinite(at) || at < 0 || at >= l.length) return;
+      idx = at;
+      lastNote = null;
+      render();
+    }));
     const goReview = $("#fc-go-review");
     if (goReview) goReview.addEventListener("click", () => navigate("review"));
     body.querySelectorAll(".grade-btn").forEach((b) => b.addEventListener("click", () => grade(parseInt(b.dataset.g, 10))));

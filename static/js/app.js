@@ -6156,19 +6156,55 @@ function manualFiguresHtml(figs, idx) {
       </div>`;
 }
 
+/* ---------------- Flashcard browse position ----------------
+ * The cards tab used to start at card 1 every time, so a 60-card deck had to be
+ * re-navigated from the top after every detour into another tab or another
+ * course. The position is remembered per course in localStorage
+ * (`mbbs_fc_pos:<lessonId>`) and written on every move — prev/next, ←/→ and
+ * grading (which also advances a card) — so a tab switch, a course switch and a
+ * full reload all land back on the same card. A stored index that no longer fits
+ * the deck (the cards were regenerated and there are fewer now) is clamped to the
+ * last card instead of rendering an undefined card or throwing.
+ */
+const FC_POS_PREFIX = "mbbs_fc_pos:";
+function fcPosKey(lessonId) { return FC_POS_PREFIX + String(lessonId == null ? "" : lessonId); }
+function readFcPos(lessonId) {
+  try {
+    const raw = localStorage.getItem(fcPosKey(lessonId));
+    if (raw == null) return null;
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) ? n : null;
+  } catch { return null; }        // storage disabled (private mode): just start at card 1
+}
+function writeFcPos(lessonId, idx) {
+  const n = Number.isFinite(Number(idx)) ? Math.max(0, Math.floor(Number(idx))) : 0;
+  try { localStorage.setItem(fcPosKey(lessonId), String(n)); } catch { /* private mode */ }
+}
+function clampFcPos(n, total) {
+  const max = Math.max(0, (Number.isFinite(Number(total)) ? Math.floor(Number(total)) : 1) - 1);
+  const i = Number.isFinite(Number(n)) ? Math.floor(Number(n)) : 0;
+  return Math.max(0, Math.min(i, max));
+}
+
 function renderCardsTab(body, lesson, cards) {
   if (!cards.length) {
     body.innerHTML = emptyState("🃏", "No flashcards yet.", `<div style="margin-top:14px"><button class="btn btn-accent" id="btn-gen3">✨ Generate study set</button></div>`);
     const b = $("#btn-gen3"); if (b) b.addEventListener("click", () => generateStudySet(currentLessonId));
     return;
   }
-  let idx = 0, flipped = false, grading = false;
+  const stored = readFcPos(lesson.id);
+  let idx = clampFcPos(stored == null ? 0 : stored, cards.length);
+  let firstPaint = true;
+  let flipped = false, grading = false;
   const render = () => {
+    writeFcPos(lesson.id, idx);      // every move is persisted, so leaving the tab is safe
     const card = cards[idx];
     const preview = [0, 1, 2, 3].map((g) => schedule(card, g));
+    const backHint = firstPaint && stored != null && idx > 0 ? ` · 已回到上次第 ${idx + 1} 张` : "";
+    firstPaint = false;
     body.innerHTML = `
       <div class="flashcard-wrap">
-        <div class="sub" style="text-align:center;margin-bottom:12px">Card ${idx + 1} / ${cards.length} · 翻牌后评分（同今日学习）</div>
+        <div class="sub" style="text-align:center;margin-bottom:12px">第 ${idx + 1} / ${cards.length} 张 · 翻牌后评分（同今日学习）${backHint}</div>
         <div class="flashcard" id="fc">
           <div class="card-label">题目</div>
           <div class="card-text" id="fc-text"></div>

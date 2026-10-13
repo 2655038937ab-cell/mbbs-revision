@@ -6328,7 +6328,15 @@ function renderCardsTab(body, lesson, cards) {
   // the store's row churn cannot move it).
   const pointIndex = cardPointIndex(lesson, cards);
   const remembered = rememberedOrder(lesson.id, cards);
+  // 闪卡顺序（用户口径）：
+  //   1. 已经做过且到期的卡先出来，按到期时间排——最近到期的在前，越久的越靠后；
+  //   2. 没做过的卡跟在后面，按讲义顺序（课程 → 知识点/幻灯片）；
+  //   3. 做过但还没到期的排最后，同样按讲义顺序。
+  const tierOf = (c) => ((c.reps || 0) >= 1 ? (isDue(c) ? 0 : 2) : 1);
   const deck = cards.slice().sort((a, b) => {
+    const ta = tierOf(a), tb = tierOf(b);
+    if (ta !== tb) return ta - tb;
+    if (ta === 0) { const d = (b.due || 0) - (a.due || 0); if (d) return d; }
     const ia = pointIndex.get(a.id), ib = pointIndex.get(b.id);
     const aA = Number.isFinite(ia), bA = Number.isFinite(ib);
     if (aA !== bA) return aA ? -1 : 1;                 // placed cards first
@@ -6417,7 +6425,7 @@ function renderCardsTab(body, lesson, cards) {
         ${progressHtml}
         <div class="fc-toolbar">
           <div class="fc-tabs">
-            <button id="fc-f-all" class="fc-tab${filter === "all" ? " on" : ""}" title="浏览视图：按课件的知识点/幻灯片顺序排列（排程请看「今日学习」）">全部 <b>${deck.length}</b></button>
+            <button id="fc-f-all" class="fc-tab${filter === "all" ? " on" : ""}" title="排序：到期的在前（最近到期的在前），没做过的按讲义顺序，做过且未到期的最后；排程请看「今日学习」">全部 <b>${deck.length}</b></button>
             <button id="fc-f-new" class="fc-tab${filter === "new" ? " on" : ""}" title="只看没做过的（reps = 0，还没评过分）">🆕 没做过 <b>${newN}</b></button>
             <button id="fc-f-due" class="fc-tab${filter === "due" ? " on" : ""}" title="只显示 SM-2 排程里今天到期的卡片">🔁 到期 <b>${dueN}</b></button>
           </div>

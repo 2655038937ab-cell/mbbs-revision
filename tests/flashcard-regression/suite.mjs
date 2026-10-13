@@ -313,16 +313,23 @@ const reviewState = (page) => page.evaluate(() => {
     await route.fulfill({ response: resp, body: JSON.stringify({ ...(body.items ? body : {}), items: previewCards }) });
   });
   await openCardsTab(pv, LESSON, true);
+  // Walk the deck and identify each card by the id the tab persists for it: the
+  // deck order is the reader's order (due first, then lecture), not the served one.
+  const byId = new Map(previewCards.map((c) => [c.id, c]));
   for (let i = 0; i < previewCards.length; i++) {
-    if (i > 0) { await pv.locator("#fc-next").click(); await pv.waitForTimeout(200); }
+    const id = (await parsedPos(pv, LESSON))?.id;
+    const card = byId.get(id);
+    if (!card) break;
     const got = await pv.evaluate(() => [...document.querySelectorAll("#tab-body .review-grade .grade-btn")].map((b) => b.querySelector(".g-int").textContent.trim()));
-    const want = expectIntervals(previewCards[i]).map(labelOf);
-    const nums = expectIntervals(previewCards[i]);
+    const want = expectIntervals(card).map(labelOf);
+    const nums = expectIntervals(card);
     const mono = nums[0] < nums[1] && nums[1] < nums[2] && nums[2] < nums[3];
-    console.log(`  ${previewCards[i].id.padEnd(12)} reps=${previewCards[i].reps} interval=${previewCards[i].interval}: page=${JSON.stringify(got)} expected=${JSON.stringify(want)} days=${JSON.stringify(nums)} monotonic=${mono}`);
-    ok(got.join() === want.join(), `${previewCards[i].id}: the four labels equal the recomputed SM-2 values`);
-    ok(mono, `${previewCards[i].id}: Again < Hard < Good < Easy`);
-    if (previewCards[i].reps >= 1) ok(nums[2] > nums[1], `${previewCards[i].id}: a non-new card's Good really grows past Hard`);
+    console.log(`  ${card.id.padEnd(12)} reps=${card.reps} interval=${card.interval}: page=${JSON.stringify(got)} expected=${JSON.stringify(want)} days=${JSON.stringify(nums)} monotonic=${mono}`);
+    ok(got.join() === want.join(), `${card.id}: the four labels equal the recomputed SM-2 values`);
+    ok(mono, `${card.id}: Again < Hard < Good < Easy`);
+    if (card.reps >= 1) ok(nums[2] > nums[1], `${card.id}: a non-new card's Good really grows past Hard`);
+    const nx = pv.locator("#fc-next");
+    if (await nx.count()) { await nx.click(); await pv.waitForTimeout(200); }
   }
   // the preview must equal what a click writes: grade Good on the learning card
   await pv.evaluate(() => { const b = document.querySelector("#fc-f-all"); if (b) b.click(); });
@@ -489,7 +496,42 @@ const reviewState = (page) => page.evaluate(() => {
   ok(jumped && jumped.id === firstNew.id, "跳到第一张没做过的 lands on the first reps=0 card");
   await pk.close();
 
-  const allErrs = [...errs, ...e2, ...e3, ...e4, ...e5, ...e6, ...e7];
+  // ---------- L. 闪卡顺序：到期的在前（按时间），没做过的按讲义顺序 ----------
+  console.log("\n=== L. deck order: due first by time, then unseen in lecture order ===");
+  const nowL = Date.now();
+  const mkc = (id, front, reps, due, idx) => ({ id, front, back: front + " B", lessonId: LESSON, ease: 2.5, interval: reps ? 3 : 0, reps, lapses: 0, due, createdAt: nowL - 1e7, source: "", src: { idx, slide: idx + 1, title: "P" + idx } });
+  // served deliberately shuffled; two unseen cards out of lecture order too
+  const deckL = [
+    mkc("zz-t-unseen5", "UNSEEN idx5", 0, nowL - 1e6, 5),
+    mkc("zz-t-oldest", "DUE oldest", 3, nowL - 30 * 86400000, 3),
+    mkc("zz-t-unseen1", "UNSEEN idx1", 0, nowL - 1e6, 1),
+    mkc("zz-t-newest", "DUE newest", 3, nowL - 30 * 60000, 2),
+    mkc("zz-t-future", "SEEN not due", 4, nowL + 5 * 86400000, 4),
+    mkc("zz-t-middle", "DUE middle", 2, nowL - 6 * 3600000, 0),
+  ];
+  const pl = await ctx.newPage();
+  const e9 = [];
+  pl.on("pageerror", (e) => e9.push(String(e).slice(0, 200)));
+  pl.on("console", (m) => { if (m.type() === "error") e9.push("console: " + m.text().slice(0, 200)); });
+  await pl.route(/\/api\/store\/cards(\?|$)/, async (route) => {
+    const resp = await route.fetch(); const body = await resp.json();
+    await route.fulfill({ response: resp, body: JSON.stringify({ ...(body.items ? body : {}), items: deckL }) });
+  });
+  await openCardsTab(pl, LESSON, true);
+  const orderL = [];
+  for (let i = 0; i < deckL.length; i++) {
+    orderL.push((await parsedPos(pl, LESSON))?.id);
+    const nx = pl.locator("#fc-next");
+    if (await nx.count()) { await nx.click(); await pl.waitForTimeout(130); }
+  }
+  const wantL = ["zz-t-newest", "zz-t-middle", "zz-t-oldest", "zz-t-unseen1", "zz-t-unseen5", "zz-t-future"];
+  console.log(`  deck order: ${JSON.stringify(orderL)}`);
+  console.log(`  expected  : ${JSON.stringify(wantL)}`);
+  ok(orderL.join("|") === wantL.join("|"),
+    "due cards first (most recently due first), then unseen in lecture order, then seen-but-not-due");
+  await pl.close();
+
+  const allErrs = [...errs, ...e2, ...e3, ...e4, ...e5, ...e6, ...e7, ...e9];
   console.log(`\npage errors: ${allErrs.length ? JSON.stringify(allErrs) : "none"}`);
   if (allErrs.length) { failures++; process.exitCode = 1; }
 

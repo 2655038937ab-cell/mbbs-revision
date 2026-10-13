@@ -5,49 +5,14 @@ The 闪卡 tab also shows progress (已做 X / 共 Y, a bar, 🆕 没做过 / �
 filters). 口径与进度页一致：做过 = `reps >= 1`，成熟 = `interval >= 21`；
 今天到期 = `due <= now`（独立的排程标记，新卡天然到期，所以与「没做过」重叠）。
 
-**顺序跟课件**：卡片在生成时由 `resolveCardSrc()` 打上 `src = { idx, slide, title }`
-（生成按 12 个知识点一批，模型回一个 `point` 字段指名来源，再在该批内匹配 → 幻灯片）。
-闪卡 tab 按 `src.idx` 排序（= 知识点 tab / 课件的顺序），没有 `src` 的老卡用同一套规则
-严格匹配（标题命中或 ≥2 个长术语），匹配不到的保持首次打开时的顺序（记在
-`mbbs_fc_order:<lessonId>`，这样服务端 INSERT OR REPLACE 造成的行序漂移不会打乱牌组）。
-实测：真实课 89 张里 40 张进入课件位（点 #4 slide 7 → #9 slide 12 → … 单调递增），
-其余排在其后；合成带 `src.idx` 的牌组完全按 idx 排序。
-
-One command:
-
-```bash
-tests/flashcard-regression/run.sh
-```
-
-It prints `PASS`/`FAIL` per check and exits non-zero on any failure. Run it after
-touching `renderCardsTab` / `flipReviewCard` / `schedule` / `previewIntervals` /
-`fcPosKey` (the tab, the review card, the SM-2 scheduler, the saved position).
-
-## What it covers
-
-| | |
-|---|---|
-| A | **flip toggles, one face at a time** — click the card 4 times: question → answer → question → answer, exactly one visible face each time (it used to stay on the answer, and the 今日学习 card rendered the question *and* the answer together) |
-| B | 今日学习 review card: flip shows the **answer only** (`elementFromPoint`-style face count = 1, no `.r-q`), clicking again returns to the question; only cards that are **due** are queued (1 项待复习 with one due + one future card, 2 项 with both due) |
-| C | the deck order is **stable**: two entries return the first 10 card ids identically, and the order equals `createdAt`+`id` |
-| D | **position memory by card id**: go to card 7, make the *server* reorder that card (`INSERT OR REPLACE` moves it to the end of the row order — PUTing its exact content reproduces it), re-enter → still card 7, same id |
-| E | boundaries: an out-of-range `{i:9999,id:gone}` clamps to a real card; a legacy plain-number value is still honoured and upgraded with the id |
-| F | SM-2 write path: grading "说得清楚" in the tab writes `interval`/`due`/`reps`/`ease` (0→1, reps 0→1, due in the future) |
-| H | the four buttons' intervals equal an **independently recomputed** SM-2 table for a new / learning / mature card, and are strictly monotonic (Again < Hard < Good < Easy) with Good growing past Hard for non-new cards |
-| I | **"完全忘了"** writes `interval 0`, `reps 0`, `due ≈ now` (the `<10m` on the button) and the card is re-queued by 今日学习 **8 queue positions later** (7 cards in between, `REQUEUE_GAP = 8`) |
-| K | **进度数字 == 独立复算**: on a synthetic deck (2 new / 2 learning / 2 mature, 5 due) the page's 已看 / 没看过 / 学习中 / 今天到期 / 已成熟 all equal the recomputed counts, the bar is 已看/总数 (±1%), the checklist has one row per card, 「只看没看过的」 narrows to the new count and 「跳到第一张没看过的」 lands on the first `reps=0` card |
-| J | the flashcard tab says out loud that an Again card comes back in 今日学习 (with a 🎯 entry point) and does **not** return within the browse view's next 10 cards |
-
-## Why the position/or order checks exist
-
-`store.py` stores records with `INSERT OR REPLACE` and the list endpoint has no
-`ORDER BY`, so a graded card gets a new rowid and jumps to the **end** of the row
-order. The tab used to render the server order, so "第 7 张" was a different card
-after every grade, and the saved position (an index) pointed at nothing stable.
-
-Two fixes are pinned here: the tab sorts the deck client-side (`createdAt`, then
-`id`), and the saved position is `{ i, id }` — the id is looked up first, the
-index is only the fallback.
+**顺序（用户口径）**：① 已做且到期的卡排最前，按到期时间——**最近到期的在前**、越久的越后；
+② 没做过的卡跟在后面，按**讲义顺序**（课程 → 知识点/幻灯片，见 `cardPointIndex()` / `resolveCardSrc()`）；
+③ 已做但还没到期的排最后，同样按讲义顺序。卡片的讲义位置在生成时由 `resolveCardSrc()` 写进
+`src = { idx, slide, title }`（生成按 12 个知识点一批，模型回一个 `point` 字段指名来源，再在该批内匹配）；
+老卡用同一套规则严格匹配（标题命中或若干术语），匹配不到的保持首次打开时的顺序
+（记在 `mbbs_fc_order:<lessonId>`，服务端 INSERT OR REPLACE 造成的行序漂移不会打乱牌组）。
+实测：合成牌组 [due oldest, due newest, due middle, unseen idx5, unseen idx1, seen-not-due]
+渲染为 due newest → due middle → due oldest → unseen idx1 → unseen idx5 → seen-not-due。
 
 ## How it works
 

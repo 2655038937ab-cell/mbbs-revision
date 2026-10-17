@@ -9831,7 +9831,26 @@ async function renderReview() {
     $("#r-lessons").addEventListener("click", () => navigate("lessons"));
     return;
   }
-  reviewQueue = plan.entries;
+  // 每天只发 20 张。
+  //
+  // 真实数据：2892 张卡里 2778 张从没复习过、成熟卡 0 张、标记到期 2884 张。一次把
+  // 2884 项列出来，"做不完"就变成了"不做"——实际只复习过 114 张。20 张是能做完的量，
+  // 想多做就再进来一次；位置记在 localStorage 里，所以每次进来是接着上次，而不是从第
+  // 一张重来。
+  const todayKey = "mbbs_today:" + new Date().toISOString().slice(0, 10);
+  let todaySaved = null;
+  try { todaySaved = JSON.parse(localStorage.getItem(todayKey) || "null"); } catch { /* ignore */ }
+  const DAILY_CAP = 20;
+  const planAll = plan.entries;
+  let startAt = 0;
+  if (todaySaved && Number.isFinite(todaySaved.pos) && todaySaved.pos > 0) {
+    // 队列每次重新生成，顺序可能变 → 先按上次那张卡的 id 找回，找不到才按旧位置
+    const byId = todaySaved.cardId
+      ? planAll.findIndex((e) => e && e.kind === "card" && e.card && e.card.id === todaySaved.cardId)
+      : -1;
+    startAt = byId >= 0 ? byId + 1 : Math.min(todaySaved.pos, planAll.length);
+  }
+  reviewQueue = planAll.slice(startAt, startAt + DAILY_CAP);
   reviewPos = 0;
   reviewRequeued = new Set();
   reviewStats = {
@@ -9862,6 +9881,15 @@ async function renderReview() {
   };
   document.addEventListener("keydown", reviewKeyHandler);
   showReviewCard();
+  // 记录"今天做到哪"，下次进入从这里接着做（跨天自动失效）。
+  try {
+    const cur = reviewQueue[reviewPos];
+    localStorage.setItem(todayKey, JSON.stringify({
+      date: todayKey.slice(-10),
+      pos: startAt + reviewPos,
+      cardId: cur && cur.card && cur.card.id ? cur.card.id : "",
+    }));
+  } catch { /* ignore */ }
 }
 
 function studyKindBadge(entry) {

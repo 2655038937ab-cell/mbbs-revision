@@ -6503,6 +6503,21 @@ function renderCardsTab(body, lesson, cards) {
     writeFcPos(lesson.id, idx, filter, list[idx] && list[idx].id);
     const card = list[idx];
     const preview = [0, 1, 2, 3].map((g) => schedule(card, g));
+    // 今日学习 CTA. The batch is 20 items and its position lives in localStorage
+    // (mbbs_today:<UTC date>, written by renderReview/showReviewCard). Reading that
+    // record here — no new storage key — is enough to say "继续" once today's batch
+    // is underway; the click itself only navigates, because renderReview owns the
+    // resume (pos/key) and the 20-item cap. Unreadable/no record -> "开始", the
+    // badge falls back to n=0.
+    const todayPos = (() => {
+      try {
+        const rec = JSON.parse(localStorage.getItem("mbbs_today:" + new Date().toISOString().slice(0, 10)) || "null");
+        if (!rec) return null;
+        const p = Number(rec.pos);
+        return Number.isFinite(p) ? Math.max(0, Math.min(20, p)) : 0;
+      } catch { return 0; }
+    })();
+    const todayLabel = todayPos == null ? "▶ 开始今天这 20 张" : `▶ 继续今天这 20 张（${todayPos}/20）`;
     const backHint = firstPaint && stored != null && idx > 0 ? ` · 已回到上次第 ${idx + 1} 张` : "";
     firstPaint = false;
     const st = statusOf(card);
@@ -6523,6 +6538,7 @@ function renderCardsTab(body, lesson, cards) {
             <button id="fc-f-new" class="fc-tab${filter === "new" ? " on" : ""}" title="只看没做过的（reps = 0，还没评过分）">🆕 没做过 <b>${newN}</b></button>
             <button id="fc-f-due" class="fc-tab${filter === "due" ? " on" : ""}" title="只显示 SM-2 排程里今天到期的卡片">🔁 到期 <b>${dueN}</b></button>
           </div>
+          <button class="btn btn-sm btn-primary" id="fc-today" title="进入今日学习：一次 20 项，位置接着上次继续">${todayLabel}</button>
           ${newN ? `<button class="btn btn-sm btn-ghost" id="fc-jump-new" title="跳到第一张没做过的卡">⏭ 没做过的第一张</button>` : ""}
           <button class="btn btn-sm btn-ghost" id="fc-list-btn" title="展开/收起卡片清单：序号 + 正面前 30 字 + 状态，点一行跳到那张卡">📋 清单 <b>${list.length}</b></button>
         </div>
@@ -6586,6 +6602,10 @@ function renderCardsTab(body, lesson, cards) {
     }));
     const goReview = $("#fc-go-review");
     if (goReview) goReview.addEventListener("click", () => navigate("review"));
+    // The CTA only navigates: renderReview reads mbbs_today (resume position) and
+    // applies the 20-item cap itself, so there is no second batch implementation.
+    const todayBtn = $("#fc-today");
+    if (todayBtn) todayBtn.addEventListener("click", () => navigate("review"));
     body.querySelectorAll(".grade-btn").forEach((b) => b.addEventListener("click", () => grade(parseInt(b.dataset.g, 10))));
     // Picture: front gets the image alone, the answer adds its caption. Only this
     // card's image is painted, and the checklist gains a 🖼 where one exists.

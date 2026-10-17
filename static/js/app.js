@@ -6611,6 +6611,23 @@ function renderCardsTab(body, lesson, cards) {
       fc.querySelector(".card-label").textContent = "Answer";
       text.className = "card-text answer";
       text.innerHTML = mdFull(card.back);
+      // A card written from a courseware point (cardPointIndex above) can send the
+      // reader straight to it — but only on the answer face, and only when the
+      // card really resolved to a point (unstamped cards that could not be matched
+      // have no index). The button sits INSIDE #fc-text, which is itself inside
+      // #fc, whose click listener flips the card back — so the handler has to stop
+      // propagation, or the click would both navigate and un-flip.
+      const pIdx = pointIndex.get(card.id);
+      if (Number.isFinite(pIdx)) {
+        const pTitle = String(((lesson.points || [])[pIdx] || {}).title || "");
+        text.innerHTML += `<div style="margin-top:14px"><button class="btn btn-sm btn-ghost" id="fc-open-point" data-idx="${pIdx}"`
+          + ` title="跳到这门课的知识点${pTitle ? "：" + escapeHtml(pTitle) : ""}">📖 看这个知识点</button></div>`;
+        const openPointBtn = $("#fc-open-point");
+        if (openPointBtn) openPointBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          openPoint(lesson.id, pIdx);
+        });
+      }
       $("#fc-grades").hidden = false;
     } else {
       fc.querySelector(".card-label").textContent = "Question";

@@ -44,6 +44,13 @@
           <span class="nav-ico">🎯</span><span>今日学习</span>
           <span class="badge" id="review-badge" hidden>0</span>
         </button>
+        <!-- The ✨ 训练 entry lives in the navigation itself (desktop sidebar, phone
+             bottom bar) so it can never sit on top of a page button. It has no
+             data-view: the plain .nav-item click handler skips it, and
+             features/launcher.js binds it to the feature picker instead. -->
+        <button class="nav-item" id="feature-launcher" title="测一测 / 混淆辨析 / 文件夹整理">
+          <span class="nav-ico">✨</span><span>训练</span>
+        </button>
         <button class="nav-item" data-view="mistakes">
           <span class="nav-ico">📕</span><span>错题</span>
           <span class="badge badge-red" id="mistake-badge" hidden>0</span>

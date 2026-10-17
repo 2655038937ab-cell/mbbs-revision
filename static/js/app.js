@@ -3287,7 +3287,7 @@ function computeMasteryMap(lessons, cards, quizzes) {
 /* ---------------- init / navigation ---------------- */
 async function init() {
   document.querySelectorAll(".nav-item").forEach((b) => {
-    b.addEventListener("click", () => navigate(b.dataset.view));
+    b.addEventListener("click", () => { if (!b.dataset.view) return; navigate(b.dataset.view); });
   });
   const lo = $("#btn-logout");
   if (lo) lo.addEventListener("click", () => { api.setToken(""); showLogin(); });

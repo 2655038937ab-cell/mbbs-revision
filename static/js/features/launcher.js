@@ -65,13 +65,24 @@ function perLessonLaunch(f) {
 }
 
 export function initFeatureLauncher() {
-  if (document.getElementById("feature-launcher")) return;
-  const btn = document.createElement("button");
-  btn.id = "feature-launcher";
-  btn.className = "btn btn-accent";
-  btn.textContent = "✨ 训练";
-  btn.title = "测一测 / 混淆辨析 / 文件夹整理";
-  btn.style.cssText = "position:fixed;bottom:22px;left:22px;z-index:150;border-radius:99px;padding:11px 18px;box-shadow:var(--shadow)";
+  // The entry is a navigation item (desktop sidebar / phone bottom bar), NOT a
+  // fixed floating button: a fixed pill sat on top of page buttons (on phones it
+  // covered the right-hand column of mistake cards and grade buttons). In the
+  // nav it can never overlap content. index.html ships it statically; the
+  // fallback keeps older cached shells working.
+  let btn = document.getElementById("feature-launcher");
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.id = "feature-launcher";
+    btn.className = "nav-item";
+    btn.title = "测一测 / 混淆辨析 / 文件夹整理";
+    btn.innerHTML = `<span class="nav-ico">✨</span><span>训练</span>`;
+    const nav = document.getElementById("nav");
+    (nav || document.body).appendChild(btn);
+  }
+  // static HTML + this module script can both run (and a re-init can be called),
+  // so bind exactly once.
+  if (btn.dataset.launcherBound) return;
+  btn.dataset.launcherBound = "1";
   btn.addEventListener("click", pickLessonAndLaunch);
-  document.body.appendChild(btn);
 }

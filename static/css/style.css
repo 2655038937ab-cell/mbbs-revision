@@ -825,8 +825,6 @@ body.pet-hidden #pet-show { display: inline-flex; }
   /* Keep a real tap target: 30px wide was under every touch guideline. The row
      scrolls sideways when 12 items do not fit — the standard phone pattern. */
   .nav-item { min-width: 42px; justify-content: center; }
-  /* Clear of the bar (76px) and of the notice strip sitting above it. */
-  #feature-launcher { left: auto !important; right: 10px !important; bottom: 134px !important; padding: 9px 14px !important; }
 }
 @media (max-width: 480px) {
   .grid-3, .grid-4 { grid-template-columns: 1fr; }

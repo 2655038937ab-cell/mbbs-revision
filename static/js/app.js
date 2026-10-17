@@ -1132,6 +1132,19 @@ let immersiveOn = false;
 let lessonOrder = []; // ordered lesson ids for quick switching
 let appConfig = null;
 let reviewQueue = [];
+// 当前这一批的 key 与起点，供 showReviewCard 每次换卡时记录进度（模块级，跨函数可见）。
+let todayBatchKey = "", todayBatchStart = 0;
+// 队列每做一项都会重新计算（评过错题会改状态、到期卡会推后），所以"第几项"不能当身份。
+// 用它来认"同一项"：卡片看 id，错题看 id，知识点看 课id+idx。
+function reviewEntryKey(e) {
+  if (!e) return "";
+  if (e.card && e.card.id) return "card:" + e.card.id;
+  if (e.mistake && (e.mistake.id || e.mistake.qid)) return "mistake:" + (e.mistake.id || e.mistake.qid);
+  if (e.mistakeId) return "mistake:" + e.mistakeId;
+  if (e.lesson && e.lesson.id && Number.isFinite(Number(e.idx))) return "point:" + e.lesson.id + ":" + e.idx;
+  if (e.id) return String(e.kind || "item") + ":" + e.id;
+  return "";
+}
 let reviewPos = 0;
 let reviewRequeued = new Set();
 let reviewStats = { cards: 0, cardGrades: [0, 0, 0, 0], newCards: 0, mistakes: 0, mistakeGot: 0, mistakeMissed: 0, points: 0, pointGrades: [0, 0, 0, 0] };
@@ -9843,14 +9856,15 @@ async function renderReview() {
   const DAILY_CAP = 20;
   const planAll = plan.entries;
   let startAt = 0;
-  if (todaySaved && Number.isFinite(todaySaved.pos) && todaySaved.pos > 0) {
-    // 队列每次重新生成，顺序可能变 → 先按上次那张卡的 id 找回，找不到才按旧位置
-    const byId = todaySaved.cardId
-      ? planAll.findIndex((e) => e && e.kind === "card" && e.card && e.card.id === todaySaved.cardId)
-      : -1;
-    startAt = byId >= 0 ? byId + 1 : Math.min(todaySaved.pos, planAll.length);
+  if (todaySaved && (todaySaved.key || Number.isFinite(todaySaved.pos))) {
+    // 优先按"上次停留的那一项的 id"找回（队列每次重算，序号靠不住）；
+    // 那一项已经完成/不在了，就从最前面没做的继续，而不是乱跳。
+    const byKey = todaySaved.key ? planAll.findIndex((e) => reviewEntryKey(e) === todaySaved.key) : -1;
+    startAt = byKey >= 0 ? byKey : Math.min(Number(todaySaved.pos) || 0, planAll.length);
   }
   reviewQueue = planAll.slice(startAt, startAt + DAILY_CAP);
+  todayBatchKey = todayKey;
+  todayBatchStart = startAt;
   reviewPos = 0;
   reviewRequeued = new Set();
   reviewStats = {
@@ -9881,15 +9895,6 @@ async function renderReview() {
   };
   document.addEventListener("keydown", reviewKeyHandler);
   showReviewCard();
-  // 记录"今天做到哪"，下次进入从这里接着做（跨天自动失效）。
-  try {
-    const cur = reviewQueue[reviewPos];
-    localStorage.setItem(todayKey, JSON.stringify({
-      date: todayKey.slice(-10),
-      pos: startAt + reviewPos,
-      cardId: cur && cur.card && cur.card.id ? cur.card.id : "",
-    }));
-  } catch { /* ignore */ }
 }
 
 function studyKindBadge(entry) {
@@ -9904,6 +9909,15 @@ function showReviewCard() {
   if (reviewPos >= reviewQueue.length) { finishReview(); return; }
   reviewFlipped = false;
   const entry = reviewQueue[reviewPos];
+  // 每换一张就记一次：只初始化时记会让 pos 永远停在 0（实测过）。
+  try {
+    localStorage.setItem(todayBatchKey, JSON.stringify({
+      date: todayBatchKey.slice(-10),
+      pos: todayBatchStart + reviewPos,
+      key: reviewEntryKey(entry),
+      cardId: entry && entry.card && entry.card.id ? entry.card.id : "",
+    }));
+  } catch { /* ignore */ }
   setStudyTarget(reviewEntryLessonId(entry));
   const remaining = reviewQueue.length - reviewPos;
   const head = `

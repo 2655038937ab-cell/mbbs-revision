@@ -10195,11 +10195,53 @@ async function renderMistakes() {
   `;
   $("#btn-mr").addEventListener("click", startMistakeReview);
   // Clicking a mistake goes to the knowledge point it tests (see openQuestionSource).
-  $("#view").querySelectorAll(".mistake-item").forEach((el) => el.addEventListener("click", async () => {
-    const m = (mistakes || []).find((x) => x.id === el.dataset.mistake);
-    if (m) { await openQuestionSource(m.lessonId, m); return; }
-    await openLesson(el.dataset.lesson, "points", { restore: false });
-  }));
+  $("#view").querySelectorAll(".mistake-item").forEach((el) => {
+    const find = () => (mistakes || []).find((x) => x.id === el.dataset.mistake);
+    el.querySelectorAll("[data-jump]").forEach((btn) => btn.addEventListener("click", async (e) => {
+      e.stopPropagation();                       // 不然整卡的点击也会跟着触发
+      const m = find();
+      if (!m) return;
+      if (btn.dataset.jump === "card") { await openMistakeCard(m); return; }
+      await openQuestionSource(m.lessonId, m);
+    }));
+    el.addEventListener("click", async () => {
+      const m = find();
+      if (m) { await openQuestionSource(m.lessonId, m); return; }
+      await openLesson(el.dataset.lesson, "points", { restore: false });
+    });
+  });
+}
+
+/* 从一条错题跳到它对应的那张闪卡。
+ *
+ * 错题记录里已经有 pointIdx/pointTitle（recordQuizMistake 用内容匹配写进去的），
+ * 新卡也有 src.idx 锚点；两者对不上时按知识点标题、再按卡面文本退而求其次。
+ * 定位结果用闪卡自己的 localStorage 机制写进去，然后打开该课的「🃏 闪卡」标签 ——
+ * 这样跳转和"上次看到第几张"是同一套逻辑，不会出现两套位置互相打架。
+ */
+async function openMistakeCard(m) {
+  if (!m || !m.lessonId) { toast("这条错题没有关联课程", "warn"); return; }
+  const idx = Number.isInteger(m.pointIdx) ? m.pointIdx : -1;
+  const mine = (await db.getAllByIndex("cards", "lessonId", m.lessonId).catch(() => [])) || [];
+  if (!mine.length) { toast("这门课还没有闪卡", "warn"); return; }
+  let hit = idx >= 0 ? mine.find((c) => c.src && Number(c.src.idx) === idx) : null;
+  if (!hit && m.pointTitle) hit = mine.find((c) => c.src && c.src.title === m.pointTitle);
+  if (!hit && m.pointTitle) hit = mine.find((c) => String(c.front || "").includes(m.pointTitle));
+  if (!hit && idx >= 0) {
+    const lesson = await getLessonFull(m.lessonId).catch(() => null);
+    const title = lesson && (lesson.points || [])[idx] ? (lesson.points[idx].title || "") : "";
+    if (title) hit = mine.find((c) => String(c.front || "").includes(title));
+  }
+  if (!hit) {
+    // 没有能对上的卡（老错题没关联、或这门课还没生成卡）→ 至少把这门课的闪卡打开，
+    // 让用户能自己往下做，而不是停在一个提示上。
+    toast("没找到这张错题对应的卡，先把这门课的闪卡打开", "warn");
+    await openLesson(m.lessonId, "cards");
+    return;
+  }
+  const pos = mine.findIndex((c) => c.id === hit.id);
+  writeFcPos(m.lessonId, pos >= 0 ? pos : 0, "", hit.id);
+  await openLesson(m.lessonId, "cards");
 }
 
 function mistakeRow(m) {
@@ -10213,6 +10255,10 @@ function mistakeRow(m) {
       <div style="font-weight:600">${mdInline(m.question)}</div>
       ${opts}
       ${m.explanation ? `<div class="q-expl" style="margin-top:8px">${optionNotesHtml(m.explanation, correctLetterOf(m))}</div>` : ""}
+      ${m.pointIdx != null || m.pointTitle ? `<div class="mistake-jump" style="margin-top:9px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-sm btn-ghost" data-jump="point" style="padding:4px 10px">📖 看知识点</button>
+        <button class="btn btn-sm btn-ghost" data-jump="card" style="padding:4px 10px">🃏 复习这张卡</button>
+      </div>` : ""}
     </div>`;
 }
 

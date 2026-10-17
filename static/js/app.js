@@ -10182,6 +10182,10 @@ function finishReview() {
 
 /* ---------------- Mistakes ---------------- */
 async function renderMistakes() {
+  {
+    const stale = document.getElementById("lesson-back-chip");
+    if (stale) stale.remove();
+  }
   const mistakes = await db.getAll("mistakes");
   const now = Date.now();
   const active = mistakes.filter((m) => !m.mastered);
@@ -10201,8 +10205,9 @@ async function renderMistakes() {
       e.stopPropagation();                       // 不然整卡的点击也会跟着触发
       const m = find();
       if (!m) return;
-      if (btn.dataset.jump === "card") { await openMistakeCard(m); return; }
+      if (btn.dataset.jump === "card") { await openMistakeCard(m); showMistakesBackChip(); return; }
       await openQuestionSource(m.lessonId, m);
+      showMistakesBackChip();
     }));
     el.addEventListener("click", async () => {
       const m = find();
@@ -10219,6 +10224,27 @@ async function renderMistakes() {
  * 定位结果用闪卡自己的 localStorage 机制写进去，然后打开该课的「🃏 闪卡」标签 ——
  * 这样跳转和"上次看到第几张"是同一套逻辑，不会出现两套位置互相打架。
  */
+/* 从错题跳出去以后，要能一键回来 —— 以前得自己点导航再找回来。
+ * 做成挂在 body 上的浮钮：不依赖课程页的头部结构，课程页怎么改都不受影响；
+ * 回到错题本时由 renderMistakes 清掉。 */
+function showMistakesBackChip() {
+  if (document.getElementById("lesson-back-chip")) return;
+  const chip = document.createElement("button");
+  chip.id = "lesson-back-chip";
+  chip.className = "btn btn-sm";
+  chip.type = "button";
+  chip.textContent = "↩ 返回错题本";
+  chip.title = "回到错题本，继续下一条";
+  // 底部居中：左下角被固定浮钮「✨ 训练」(#feature-launcher) 占着，放那里会被它挡住点不到。
+  chip.style.cssText = "position:fixed;left:50%;transform:translateX(-50%);bottom:22px;z-index:85;padding:9px 16px;border-radius:999px;background:var(--card,#fff);border:1.5px solid var(--border);box-shadow:0 3px 14px rgba(0,0,0,.16);font-size:13px;cursor:pointer";
+  chip.addEventListener("click", (e) => {
+    e.stopPropagation();
+    chip.remove();
+    navigate("mistakes");
+  });
+  document.body.appendChild(chip);
+}
+
 async function openMistakeCard(m) {
   if (!m || !m.lessonId) { toast("这条错题没有关联课程", "warn"); return; }
   const idx = Number.isInteger(m.pointIdx) ? m.pointIdx : -1;

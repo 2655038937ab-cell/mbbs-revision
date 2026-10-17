@@ -1134,6 +1134,8 @@ let appConfig = null;
 let reviewQueue = [];
 // 当前这一批的 key 与起点，供 showReviewCard 每次换卡时记录进度（模块级，跨函数可见）。
 let todayBatchKey = "", todayBatchStart = 0;
+// 这一批的开始时间（写进 mbbs_today.startedAt，收尾屏用它算用时）和 20 上限之外留到明天的项数。
+let todayBatchStartedAt = 0, todayBatchRemaining = 0;
 // 队列每做一项都会重新计算（评过错题会改状态、到期卡会推后），所以"第几项"不能当身份。
 // 用它来认"同一项"：卡片看 id，错题看 id，知识点看 课id+idx。
 function reviewEntryKey(e) {
@@ -9902,6 +9904,12 @@ async function renderReview() {
   reviewQueue = planAll.slice(startAt, startAt + DAILY_CAP);
   todayBatchKey = todayKey;
   todayBatchStart = startAt;
+  // 收尾屏的用时基准：第一次进来时记下，同一天续做沿用记录里的 startedAt（不重新计时），
+  // 隔天/异常值（未来时间）才重新开始。
+  const savedStart = todaySaved && Number.isFinite(Number(todaySaved.startedAt)) ? Number(todaySaved.startedAt) : 0;
+  todayBatchStartedAt = savedStart > 0 && savedStart <= Date.now() ? savedStart : Date.now();
+  // 这批（20 上限）之外还剩多少项留到明天；finishReview 直接读它。
+  todayBatchRemaining = Math.max(0, planAll.length - (startAt + DAILY_CAP));
   reviewPos = 0;
   reviewRequeued = new Set();
   reviewStats = {
@@ -9953,6 +9961,7 @@ function showReviewCard() {
       pos: todayBatchStart + reviewPos,
       key: reviewEntryKey(entry),
       cardId: entry && entry.card && entry.card.id ? entry.card.id : "",
+      startedAt: todayBatchStartedAt,
     }));
   } catch { /* ignore */ }
   setStudyTarget(reviewEntryLessonId(entry));
@@ -10207,10 +10216,20 @@ function finishReview() {
     ? `${reviewStats.mistakes} 错题 (掌握 ${reviewStats.mistakeGot} · 仍错 ${reviewStats.mistakeMissed})`
     : "";
   const lines = [cardLine, pointLine, mistakeLine].filter(Boolean).join("<br>");
+  // 这一批的小结：一批里可能混着卡/知识点/错题，所以「张」只算闪卡；记得 = Good+Easy，
+  // 忘了 = Again+Hard；用时以 renderReview 记的批次开始时间为准（异常值回退 0）；
+  // 明天 N 是 20 上限之外没轮到的剩余。
+  const summaryCards = reviewStats.cards || 0;
+  const remembered = (reviewStats.cardGrades[2] || 0) + (reviewStats.cardGrades[3] || 0);
+  const forgot = (reviewStats.cardGrades[0] || 0) + (reviewStats.cardGrades[1] || 0);
+  let elapsedMs = todayBatchStartedAt ? Date.now() - todayBatchStartedAt : 0;
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0 || elapsedMs > 6 * 3600 * 1000) elapsedMs = 0;
+  const batchSummary = `${summaryCards} 张 · 记得 ${remembered} / 忘了 ${forgot} · 用时 ${fmtDuration(elapsedMs / 1000)} · 明天还有 ${Math.max(0, todayBatchRemaining)}`;
   $("#view").innerHTML = `
     <div class="card" style="max-width:560px;margin:40px auto;text-align:center">
       <div class="empty-ico" style="font-size:44px">✅</div>
       <h2>今日学习完成</h2>
+      <div id="r-summary" style="margin:10px 0 4px;font-size:19px;font-weight:700;line-height:1.55">${batchSummary}</div>
       <p class="sub">${lines || "没有需要复习的项目。"}</p>
       <button class="btn btn-primary" id="r-done">Done</button>
     </div>`;

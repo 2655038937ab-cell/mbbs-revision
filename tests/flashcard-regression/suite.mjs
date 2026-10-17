@@ -258,6 +258,15 @@ const reviewState = (page) => page.evaluate(() => {
       const items = (body.items || []).map((l) => ({ ...l, points: (l.points || []).map((pt) => ({ ...pt, feynmanStage: 1, feynmanDue: now + 1e12 })) }));
       await route.fulfill({ response: resp, body: JSON.stringify({ ...(body.items ? body : {}), items }) });
     });
+    // These pages deliberately share one context (and therefore one localStorage)
+    // so the fixture data is loaded once. But the previous page leaves today's
+    // "where I stopped" record behind, and 今日学习 correctly resumes from it —
+    // which made the control run below see a 1-item queue instead of the two due
+    // cards it asserts on. Clear that resume state per page so each run starts at
+    // the beginning and the due-queue assertion measures the filter, not the resume.
+    await p2.addInitScript(() => {
+      try { Object.keys(localStorage).filter((k) => k.startsWith("mbbs_today:")).forEach((k) => localStorage.removeItem(k)); } catch { /* ignore */ }
+    });
     await p2.goto(BASE + "/", { waitUntil: "domcontentloaded" });
     await p2.waitForTimeout(2500);
     await p2.evaluate(() => { const b = document.querySelector("#btn-study"); if (b) b.click(); });

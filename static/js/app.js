@@ -1153,6 +1153,9 @@ let reviewStats = { cards: 0, cardGrades: [0, 0, 0, 0], newCards: 0, mistakes: 0
 let reviewFlipped = false;
 let reviewKeyHandler = null;
 let reviewLessonMap = {};
+// id -> light lesson record (titles + points + slide numbers), used to pick the
+// card figure in 今日学习 without another fetch.
+let reviewLessonById = new Map();
 let feynmanKeyHandler = null;
 let mistakeKeyHandler = null;
 let feynmanRevealed = false;
@@ -6284,7 +6287,7 @@ function fcSlideNumber(card, lesson, pointIdx) {
   if (Number.isFinite(i) && pts[i] && Number.isFinite(pts[i].slide)) return Number(pts[i].slide);
   return null;
 }
-function fcFigureRec(images, lesson, slideNum) {
+function fcFigureRec(images, lesson, slideNum, card, pointIdx) {
   if (!images || !Array.isArray(images.slides) || slideNum == null) return null;
   const slides = (lesson && lesson.slides) || [];
   const at = slides.findIndex((sl) => Number(sl && sl.index) === Number(slideNum));
@@ -6296,11 +6299,57 @@ function fcFigureRec(images, lesson, slideNum) {
   // crops slide artwork without labelling it (only pdf_parser tags figure/page and
   // the logo filter tags logos), so keying strictly on kind made every PPTX course
   // show no picture on its cards even though its 配图 tab listed the figures.
-  // Prefer a real figure, then a whole page; excluded logos never qualify.
-  let idx = imgs.findIndex((im) => im && im.dataUrl && im.kind !== "logo" && im.kind !== "page");
-  if (idx < 0) idx = imgs.findIndex((im) => im && im.dataUrl && im.kind === "page");
-  if (idx < 0) return null;
-  return { im: imgs[idx], slideAt, idx };
+  // Prefer real figures, then a whole page; logos never qualify.
+  const figs = [];
+  imgs.forEach((im, idx) => { if (im && im.dataUrl && im.kind !== "logo" && im.kind !== "page") figs.push({ im, idx }); });
+  if (!figs.length) imgs.forEach((im, idx) => { if (im && im.dataUrl && im.kind === "page") figs.push({ im, idx }); });
+  if (!figs.length) return null;
+  if (figs.length === 1) return { im: figs[0].im, slideAt, idx: figs[0].idx };
+  // Which picture on the slide belongs to THIS card? A slide usually lists its
+  // points and its figures in the same order, so when there is one figure per
+  // point the point's position on the slide picks its figure. That also resolves
+  // uncaptioned figures (a PPTX crop has no caption to match against).
+  const pts = (lesson && lesson.points) || [];
+  const pt = Number.isFinite(pointIdx) && pts[pointIdx] ? pts[pointIdx] : null;
+  const onSlide = pts.filter((p) => Number(p && p.slide) === Number(slideNum));
+  const canOrder = !!(pt && Number(pt.slide) === Number(slideNum));
+  let ord = -1;
+  if (canOrder) {
+    ord = 0;
+    for (let i = 0; i < pts.length && i < pointIdx; i++) {
+      if (Number(pts[i] && pts[i].slide) === Number(slideNum)) ord++;
+    }
+  }
+  if (canOrder && onSlide.length >= figs.length) {
+    const pick = figs[Math.min(ord, figs.length - 1)];
+    return { im: pick.im, slideAt, idx: pick.idx };
+  }
+  // More figures than points: match the card's distinctive wording against the
+  // captions (a card about 黑障 belongs to the 黑障 figure, not the first photo on
+  // the slide). IDF weighting stops common words (肺 / 细胞 / 血) from deciding;
+  // a slide with no usable captions falls back to the first figure.
+  const ownImgs = ((lesson && slides[slideAt]) || {}).images || [];
+  const plain = (t) => String(t || "").replace(/[\s，。、：；（）()·\-—\d]+/g, "");
+  const caps = figs.map((f) => fcFigureCaption(ownImgs[f.idx] || {}));
+  const bags = caps.map((cap) => bigramSet(plain(cap)));
+  const df = new Map();
+  bags.forEach((bag) => { for (const g of bag) df.set(g, (df.get(g) || 0) + 1); });
+  const idf = (g) => Math.log(1 + figs.length / (df.get(g) || 1));
+  const cardText = bigramSet(plain([card && card.front, card && card.back, pt && pt.title].filter(Boolean).join(" ")));
+  let total = 0;
+  for (const g of cardText) total += idf(g);
+  let best = -1, bestScore = 0;
+  if (total > 0) {
+    figs.forEach((f, j) => {
+      if (!caps[j]) return;
+      let s = 0;
+      for (const g of cardText) if (bags[j].has(g)) s += idf(g);
+      s /= total;
+      if (s > bestScore) { bestScore = s; best = j; }
+    });
+  }
+  const pick = best >= 0 && bestScore >= 0.12 ? figs[best] : figs[0];
+  return { im: pick.im, slideAt, idx: pick.idx };
 }
 function fcFigure(images, lesson, slideNum) {
   const rec = fcFigureRec(images, lesson, slideNum);
@@ -6328,7 +6377,7 @@ function paintCardFigure(hostId, card, lesson, pointIdx, withCaption) {
   const paintWith = (images) => {
     const host = document.getElementById(hostId);
     if (!host || !card || host.dataset.card !== String(card.id)) return;
-    const rec = fcFigureRec(images, lesson, fcSlideNumber(card, lesson, pointIdx));
+    const rec = fcFigureRec(images, lesson, fcSlideNumber(card, lesson, pointIdx), card, pointIdx);
     const im = rec && rec.im;
     if (!im) { host.innerHTML = ""; return; }
     const cap = withCaption ? (fcFigureCaption(im) || fcFigureCaptionFor(lesson, rec)) : "";
@@ -9893,7 +9942,8 @@ async function renderReview() {
     db.getAll("cards"), db.getAll("lessons"), db.getAll("mistakes"),
   ]);
   reviewLessonMap = {};
-  lessons.forEach((l) => (reviewLessonMap[l.id] = l.title));
+  reviewLessonById = new Map();
+  lessons.forEach((l) => { reviewLessonMap[l.id] = l.title; reviewLessonById.set(l.id, l); });
   const plan = planStudyQueue(cards, lessons, mistakes);
   if (!plan.entries.length) {
     setActivity(null);
@@ -9973,6 +10023,20 @@ function studyKindBadge(entry) {
   return `<span class="pill pill-amber">🎓 知识点</span>`;
 }
 
+/* Which lesson record to use when painting a card figure in 今日学习. The queue
+ * is built from the light lesson list (no slides/captions); a full record is only
+ * available if the user browsed the course this session. Passing whatever exists
+ * lets fcFigureRec apply the same card↔figure matching as the 闪卡 tab; with no
+ * record the picture falls back to the first figure as before. */
+function reviewFigureLesson(card) {
+  if (!card || !card.lessonId) return null;
+  return fullLessonCache.get(card.lessonId) || reviewLessonById.get(card.lessonId) || null;
+}
+function reviewFigurePointIdx(card) {
+  const n = Number(card && card.src && card.src.idx);
+  return Number.isFinite(n) ? n : null;
+}
+
 function showReviewCard() {
   if (reviewPos >= reviewQueue.length) { finishReview(); return; }
   reviewFlipped = false;
@@ -10022,7 +10086,7 @@ function showReviewCard() {
     $("#r-fc").addEventListener("click", flipReviewCard);
     // Same lazy per-lesson picture as the 🃏 tab: only this card's image, and the
     // caption appears with the answer.
-    paintCardFigure("r-fig", card, null, null, false);
+    paintCardFigure("r-fig", card, reviewFigureLesson(card), reviewFigurePointIdx(card), false);
     $("#r-reveal").addEventListener("click", flipReviewCard);
     $("#view").querySelectorAll(".grade-btn").forEach((b) => b.addEventListener("click", () => gradeStudyEntry(parseInt(b.dataset.g, 10))));
     return;
@@ -10132,7 +10196,7 @@ function flipReviewCard() {
     const t = $("#r-text");
     const rv = $("#r-reveal");
     const g = $("#r-grades");
-    paintCardFigure("r-fig", card, null, null, reviewFlipped);
+    paintCardFigure("r-fig", card, reviewFigureLesson(card), reviewFigurePointIdx(card), reviewFlipped);
     if (reviewFlipped) {
       if (label) label.textContent = "答案";
       t.className = "card-text answer";

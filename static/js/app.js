@@ -6279,13 +6279,48 @@ function ensureLessonImages(lessonId) {
     return fcImagesCache.get(key);
   });
 }
+/* Older PDF imports stored no slide anchor on their cards (src is null), and a
+ * card's point match can be too weak to find one. Last resort for the card
+ * picture: match the card's own wording against each slide's text and use the
+ * clearest winner. A wrong page is worse than none, so demand a decent score AND
+ * a clear margin over the runner-up. */
+const slideTextIndex = new WeakMap();   // lesson object -> { slides, byCard }
+function matchSlideByText(card, lesson) {
+  const slides = (lesson && lesson.slides) || [];
+  if (!slides.length || !card) return null;
+  const plain = (t) => String(t || "").toLowerCase().replace(/[\s，。、：；（）()·\-—′“”‘’…]+/g, "");
+  let cache = slideTextIndex.get(lesson);
+  if (!cache) {
+    cache = {
+      slides: slides.map((s) => ({ index: Number(s.index), bag: bigramSet(plain(`${s.text || ""} ${s.notes || ""}`)) })),
+      byCard: new Map(),
+    };
+    slideTextIndex.set(lesson, cache);
+  }
+  const key = String(card.id || "");
+  if (cache.byCard.has(key)) return cache.byCard.get(key);
+  const bag = bigramSet(plain(`${card.front || ""} ${card.back || ""}`));
+  let best = -1, bestScore = 0, secondScore = 0;
+  if (bag.size) {
+    for (let i = 0; i < cache.slides.length; i++) {
+      let hit = 0;
+      for (const g of bag) if (cache.slides[i].bag.has(g)) hit++;
+      const score = hit / bag.size;
+      if (score > bestScore) { secondScore = bestScore; bestScore = score; best = i; }
+      else if (score > secondScore) secondScore = score;
+    }
+  }
+  const slide = best >= 0 && bestScore >= 0.4 && bestScore >= secondScore + 0.15 ? cache.slides[best].index : null;
+  cache.byCard.set(key, slide);
+  return slide;
+}
 function fcSlideNumber(card, lesson, pointIdx) {
   const src = (card && card.src) || null;
   const pts = (lesson && lesson.points) || [];
   if (src && Number.isFinite(src.slide)) return Number(src.slide);
   const i = src && Number.isFinite(src.idx) ? Number(src.idx) : pointIdx;
   if (Number.isFinite(i) && pts[i] && Number.isFinite(pts[i].slide)) return Number(pts[i].slide);
-  return null;
+  return matchSlideByText(card, lesson);
 }
 function fcFigureRec(images, lesson, slideNum, card, pointIdx) {
   if (!images || !Array.isArray(images.slides) || slideNum == null) return null;

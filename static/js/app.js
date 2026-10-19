@@ -6295,14 +6295,19 @@ function fcFigureRec(images, lesson, slideNum, card, pointIdx) {
   const slideAt = at >= 0 ? at : Number(slideNum) - 1;
   const rec = images.slides[slideAt];
   const imgs = (rec && Array.isArray(rec.images)) ? rec.images : [];
-  // A missing `kind` means "an embedded figure", not "nothing": the PPTX parser
-  // crops slide artwork without labelling it (only pdf_parser tags figure/page and
-  // the logo filter tags logos), so keying strictly on kind made every PPTX course
-  // show no picture on its cards even though its 配图 tab listed the figures.
-  // Prefer real figures, then a whole page; logos never qualify.
+  // The original slide page wins whenever the import produced one (PDF pages are
+  // rendered whole): the card then shows the courseware page exactly as it was —
+  // text, labels and every figure in place — instead of a crop that can cut a
+  // label off or show the wrong part of the page. PPTX imports carry only the
+  // embedded pictures, so they fall through to the per-card matching below.
+  const pageIdx = imgs.findIndex((im) => im && im.dataUrl && im.kind === "page");
+  if (pageIdx >= 0) return { im: imgs[pageIdx], slideAt, idx: pageIdx };
+  // Embedded pictures: a missing `kind` means "a figure", not "nothing" — the
+  // PPTX parser crops slide artwork without labelling it, so keying strictly on
+  // kind made every PPTX course show no picture on its cards even though its 配图
+  // tab listed the figures. Logos are the only pictures never shown here.
   const figs = [];
-  imgs.forEach((im, idx) => { if (im && im.dataUrl && im.kind !== "logo" && im.kind !== "page") figs.push({ im, idx }); });
-  if (!figs.length) imgs.forEach((im, idx) => { if (im && im.dataUrl && im.kind === "page") figs.push({ im, idx }); });
+  imgs.forEach((im, idx) => { if (im && im.dataUrl && im.kind !== "logo") figs.push({ im, idx }); });
   if (!figs.length) return null;
   if (figs.length === 1) return { im: figs[0].im, slideAt, idx: figs[0].idx };
   // Which picture on the slide belongs to THIS card? A slide usually lists its
@@ -6619,11 +6624,11 @@ function renderCardsTab(body, lesson, cards) {
         <div class="fc-pos" id="fc-pos">第 ${idx + 1} / ${list.length} 张 · ${st.label}${isDue(card) ? " · 🔁 今天到期" : ""}${backHint} <span id="fc-sched">${schedLabel(card)}</span></div>
         ${listOpen ? `<div class="fc-list" id="fc-list">${checklist}</div>` : ""}
         ${lastNote ? `<div class="fc-note">${lastNote} <button class="btn btn-sm btn-ghost" id="fc-go-review">🎯 去今日学习</button></div>` : ""}
-        <div class="fc-fig" id="fc-fig" data-card="${card.id}"></div>
         <div class="flashcard" id="fc">
           <div class="card-label">题目</div>
           <div class="card-text" id="fc-text"></div>
         </div>
+        <div class="fc-fig" id="fc-fig" data-card="${card.id}" style="margin:12px 0 0"></div>
         <div id="fc-grades" hidden style="margin-top:14px">
           <div class="review-grade">
             <button class="grade-btn grade-0" data-g="0"><span>完全忘了</span><span class="g-int">${intervalLabel(preview[0].interval)}</span><span class="g-key">1</span></button>

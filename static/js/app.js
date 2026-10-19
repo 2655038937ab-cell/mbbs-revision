@@ -6284,14 +6284,36 @@ function fcSlideNumber(card, lesson, pointIdx) {
   if (Number.isFinite(i) && pts[i] && Number.isFinite(pts[i].slide)) return Number(pts[i].slide);
   return null;
 }
-function fcFigure(images, lesson, slideNum) {
+function fcFigureRec(images, lesson, slideNum) {
   if (!images || !Array.isArray(images.slides) || slideNum == null) return null;
   const slides = (lesson && lesson.slides) || [];
   const at = slides.findIndex((sl) => Number(sl && sl.index) === Number(slideNum));
   // lessonImages mirrors lesson.slides positionally and usually carries no index.
-  const rec = images.slides[at >= 0 ? at : Number(slideNum) - 1];
-  const imgs = ((rec && rec.images) || []).filter((im) => im && im.dataUrl);
-  return imgs.find((im) => im.kind === "figure") || imgs.find((im) => im.kind === "page") || null;
+  const slideAt = at >= 0 ? at : Number(slideNum) - 1;
+  const rec = images.slides[slideAt];
+  const imgs = (rec && Array.isArray(rec.images)) ? rec.images : [];
+  // A missing `kind` means "an embedded figure", not "nothing": the PPTX parser
+  // crops slide artwork without labelling it (only pdf_parser tags figure/page and
+  // the logo filter tags logos), so keying strictly on kind made every PPTX course
+  // show no picture on its cards even though its 配图 tab listed the figures.
+  // Prefer a real figure, then a whole page; excluded logos never qualify.
+  let idx = imgs.findIndex((im) => im && im.dataUrl && im.kind !== "logo" && im.kind !== "page");
+  if (idx < 0) idx = imgs.findIndex((im) => im && im.dataUrl && im.kind === "page");
+  if (idx < 0) return null;
+  return { im: imgs[idx], slideAt, idx };
+}
+function fcFigure(images, lesson, slideNum) {
+  const rec = fcFigureRec(images, lesson, slideNum);
+  return rec ? rec.im : null;
+}
+/* The lessonImages store keeps only the payload (dataUrl/name/mime/kind); the
+ * caption lives on the lesson's own slide image. Card figures are painted from
+ * the store, so without this the answer face showed the picture but never its
+ * 图注 even though the same figure is captioned in the 配图 tab. */
+function fcFigureCaptionFor(lesson, rec) {
+  const ownImgs = rec && lesson && ((lesson.slides || [])[rec.slideAt] || {}).images;
+  const own = ownImgs && ownImgs[rec.idx];
+  return own ? fcFigureCaption(own) : "";
 }
 function fcFigureCaption(im) {
   const c = im && im.caption;
@@ -6306,9 +6328,10 @@ function paintCardFigure(hostId, card, lesson, pointIdx, withCaption) {
   const paintWith = (images) => {
     const host = document.getElementById(hostId);
     if (!host || !card || host.dataset.card !== String(card.id)) return;
-    const im = fcFigure(images, lesson, fcSlideNumber(card, lesson, pointIdx));
+    const rec = fcFigureRec(images, lesson, fcSlideNumber(card, lesson, pointIdx));
+    const im = rec && rec.im;
     if (!im) { host.innerHTML = ""; return; }
-    const cap = withCaption ? fcFigureCaption(im) : "";
+    const cap = withCaption ? (fcFigureCaption(im) || fcFigureCaptionFor(lesson, rec)) : "";
     host.innerHTML = `<figure class="fc-fig${im.kind === "page" ? " fc-fig-page" : ""}" title="点击放大">`
       + `<img src="${im.dataUrl}" alt="">`
       + (cap ? `<figcaption>${mdInline(cap)}</figcaption>` : "")

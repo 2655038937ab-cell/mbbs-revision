@@ -6514,6 +6514,89 @@ function rememberedOrder(lessonId, cards) {
   return new Map(Object.entries(map).map(([k, v]) => [k, Number(v) || 0]));
 }
 
+/* ------------------------------------------------------------------
+ * 考前复习：公开期末大纲/复习资料里反复出现的高频考点词表（不是 AI 重要度）。
+ * 用法是给每门生化课筛出「最常考」的卡；词表刻意只收具体考点，不收“蛋白质/核酸”
+ * 这类泛词，避免整课都命中。MUST 里每项至少保一张卡，保证考点覆盖。
+ * ------------------------------------------------------------------ */
+const CRAM_TERMS = {
+  // 氨基酸/肽
+  "等电点": 3, "两性电解质": 2, "肽键": 3, "肽平面": 2, "手性": 2, "对映体": 2, "氨基酸": 1,
+  // 二级结构
+  "α螺旋": 3, "β折叠": 3, "β转角": 2, "拉氏图": 3, "二级结构": 2,
+  // 三级/折叠/四级
+  "疏水效应": 3, "疏水作用": 2, "分子伴侣": 2, "别构": 3, "协同效应": 3, "蛋白质折叠": 2, "自由能漏斗": 2,
+  "三级结构": 2, "四级结构": 2, "结构域": 1, "固有无序": 1, "二硫键": 2, "原体": 2, "亚基": 1,
+  // 纤维蛋白
+  "胶原": 2, "角蛋白": 2, "卷曲螺旋": 2,
+  // Mb/Hb
+  "肌红蛋白": 3, "血红蛋白": 3, "氧解离": 3, "p50": 2, "hill": 1, "波尔效应": 3,
+  "玻尔效应": 3, "bpg": 3, "2,3-bpg": 3, "镰状细胞": 3, "血红素": 2, "一氧化碳": 1,
+  // 其他功能蛋白
+  "膜转运": 2, "gpcr": 2, "igg": 2, "抗体": 1, "翻译后修饰": 2, "磷酸化": 1,
+  // 蛋白质方法（高频）
+  "蛋白质纯化": 2, "盐析": 2, "透析": 2, "超滤": 2, "层析": 2, "离子交换": 2,
+  "尺寸排阻": 2, "凝胶过滤": 2, "亲和层析": 2, "电泳": 2, "sds-page": 3,
+  "等电聚焦": 2, "二维电泳": 2, "免疫印迹": 3, "western": 3, "elisa": 2,
+  "质谱": 3, "edman": 2, "固相合成": 1, "bradford": 2, "bca": 2, "分光光度": 1,
+  "紫外吸收": 2, "离心": 1, "超速离心": 1, "密度梯度": 1, "差速离心": 1, "蛋白质浓度": 1,
+  // 分子基础
+  "氢键": 2, "范德华": 1, "缓冲": 2, "渗透压": 2, "活化能": 2, "过渡态": 1,
+  "吉布斯自由能": 3, "中心法则": 3, "顺反异构": 1, "构象": 1,
+  // 核酸组成/结构
+  "碱基": 1, "核苷酸": 1, "查加夫": 3, "chargaff": 3, "碱基配对": 3, "双螺旋": 3,
+  "增色效应": 2, "减色效应": 2, "熔解温度": 3, "变性": 2, "复性": 2,
+  "超螺旋": 2, "拓扑异构酶": 2, "三链": 1, "g-四联体": 2, "核小体": 3, "组蛋白": 2,
+  "染色质": 1, "大沟": 1, "小沟": 1,
+  // RNA / 核酶
+  "trna": 3, "rrna": 3, "mrna": 3, "mirna": 2, "sirna": 2, "核酶": 3,
+  "转录": 1, "翻译": 1, "密码子": 1, "限制性内切酶": 2, "pcr": 1, "sanger": 1,
+  // 修饰
+  "m6a": 2, "5mc": 2, "甲基化": 1,
+};
+const CRAM_MUST = ["等电点","肽键","α螺旋","β折叠","拉氏图","疏水效应","分子伴侣","别构","协同效应",
+  "肌红蛋白","血红蛋白","波尔效应","bpg","镰状细胞","查加夫","双螺旋","增色效应","熔解温度",
+  "核小体","超螺旋","核酶","trna","rrna","mrna","mirna","限制性内切酶","sds-page","层析","质谱",
+  "western","elisa","edman","变性","缓冲","渗透压","吉布斯自由能","活化能","二硫键","原体",
+  "组蛋白","m6a","翻译后修饰","膜转运","gpcr","igg","抗体","盐析","透析","离心","电泳","紫外吸收"];
+const CRAM_META = /本章|学习框架|知识框架|学科定位|里程碑|历史|四阶段|趋势|研究方向|未来|故事|人物|年代|\d{4}年|该工作|请列举.*技术|研究领域|复习提示|学习目标|最终目标/;
+const CRAM_CAP = 60;
+const CRAM_LESSON_RE = /生物化学|生物化學|biochemistry/i;
+
+function buildCramIds(lesson, cards) {
+  const out = new Set();
+  if (!lesson || !CRAM_LESSON_RE.test(lesson.title || "")) return out;
+  const plain = (t) => String(t || "").toLowerCase()
+    .replace(/[（(【\[][^）)】\]]*[）)】\]]/g, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+  const entries = (cards || []).map((c) => {
+    const text = plain(`${c.front || ""} ${c.back || ""}`);
+    let score = 0;
+    const matched = new Set();
+    for (const term of Object.keys(CRAM_TERMS)) {
+      if (text.includes(plain(term))) { matched.add(term); score += CRAM_TERMS[term]; }
+    }
+    return { c, score, matched, meta: CRAM_META.test(c.front || "") };
+  });
+  // 每个必考主题先保一张最有代表性的卡
+  for (const term of CRAM_MUST) {
+    let best = null;
+    for (const e of entries) {
+      if (e.meta || !e.matched.has(term)) continue;
+      if (!best || e.score > best.score) best = e;
+    }
+    if (best) out.add(best.c.id);
+  }
+  // 再按考点密度补满
+  const rest = entries.filter((e) => !e.meta && !out.has(e.c.id) && e.score >= 2)
+    .sort((a, b) => b.score - a.score);
+  for (const e of rest) {
+    if (out.size >= CRAM_CAP) break;
+    out.add(e.c.id);
+  }
+  return out;
+}
+
 function renderCardsTab(body, lesson, cards) {
   if (!cards.length) {
     body.innerHTML = emptyState("🃏", "No flashcards yet.", `<div style="margin-top:14px"><button class="btn btn-accent" id="btn-gen3">✨ Generate study set</button></div>`);
@@ -6555,10 +6638,15 @@ function renderCardsTab(body, lesson, cards) {
     return (remembered.get(a.id) ?? 1e9) - (remembered.get(b.id) ?? 1e9);
   };
   const deck = cards.slice().sort(deckOrder);
+  // 考前复习（cram）：按公开的生化期末高频考点词表筛卡（不是按 AI 给的 importance）。
+  // 先给每个「必考主题」挑一张最能体现它的卡，再按考点密度补满；只筛不改数据，
+  // 播放顺序仍按课件顺序。
+  const cramIds = buildCramIds(lesson, cards);
   let filter = "all";
   const dueList = () => deck.filter((c) => isDue(c));
   const newList = () => deck.filter((c) => !((c.reps || 0) >= 1));
-  const view = () => (filter === "due" ? dueList() : filter === "new" ? newList() : deck);
+  const cramList = () => deck.filter((c) => cramIds.has(c.id));
+  const view = () => (filter === "due" ? dueList() : filter === "new" ? newList() : filter === "cram" ? cramList() : deck);
   const stored = readFcPos(lesson.id);
   let idx = resolveFcPos(stored, deck);
   let firstPaint = true;
@@ -6620,8 +6708,12 @@ function renderCardsTab(body, lesson, cards) {
         <div class="fc-bar"><i id="fc-bar" style="width:${pct}%"></i></div>
       </div>`;
     if (!list.length) {
+      const emptyIcon = filter === "cram" ? "🎯" : filter === "new" ? "🆕" : "⏰";
+      const emptyText = filter === "cram"
+        ? "本课没有按高频考点词表筛出卡片（可能这门课不是生化，或卡片内容未覆盖考点）。"
+        : filter === "new" ? "这门课的卡都做过了。" : "今天没有到期的卡片。";
       body.innerHTML = `<div class="flashcard-wrap">${progressHtml}` +
-        emptyState(filter === "new" ? "🆕" : "⏰", filter === "new" ? "这门课的卡都做过了。" : "今天没有到期的卡片。",
+        emptyState(emptyIcon, emptyText,
           `<div style="margin-top:14px"><button class="btn btn-accent" id="fc-f-all">看全部 ${deck.length} 张</button></div>`) + `</div>`;
       const all = $("#fc-f-all");
       if (all) all.addEventListener("click", () => { filter = "all"; idx = resolveFcPos(readFcPos(lesson.id), deck); render(); });
@@ -6666,6 +6758,7 @@ function renderCardsTab(body, lesson, cards) {
             <button id="fc-f-all" class="fc-tab${filter === "all" ? " on" : ""}" title="排序：到期卡在前、没做过其次、做过未到期最后；每组内部按课件顺序（slide/知识点）；排程请看「今日学习」">全部 <b>${deck.length}</b></button>
             <button id="fc-f-new" class="fc-tab${filter === "new" ? " on" : ""}" title="只看没做过的（reps = 0，还没评过分）">🆕 没做过 <b>${newN}</b></button>
             <button id="fc-f-due" class="fc-tab${filter === "due" ? " on" : ""}" title="只显示 SM-2 排程里今天到期的卡片">🔁 到期 <b>${dueN}</b></button>
+            ${CRAM_LESSON_RE.test(lesson.title || "") ? `<button id="fc-f-cram" class="fc-tab cram${filter === "cram" ? " on" : ""}" title="考前复习：按公开期末高频考点词表筛出的本课最常考卡片（最多 ${CRAM_CAP} 张），仍按课件顺序；不按 AI 重要度">🎯 考前复习 <b>${cramIds.size}</b></button>` : ""}
           </div>
           <button class="btn btn-sm btn-primary" id="fc-today" title="进入今日学习：一次 20 项，位置接着上次继续">${todayLabel}</button>
           ${newN ? `<button class="btn btn-sm btn-ghost" id="fc-jump-new" title="跳到第一张没做过的卡">⏭ 没做过的第一张</button>` : ""}
@@ -6707,6 +6800,8 @@ function renderCardsTab(body, lesson, cards) {
     if (fAll) fAll.addEventListener("click", () => switchFilter("all"));
     const fDue = $("#fc-f-due");
     if (fDue) fDue.addEventListener("click", () => switchFilter("due"));
+    const fCram = $("#fc-f-cram");
+    if (fCram) fCram.addEventListener("click", () => switchFilter("cram"));
     const fNew = $("#fc-f-new");
     if (fNew) fNew.addEventListener("click", () => switchFilter("new"));
     const jumpNew = $("#fc-jump-new");

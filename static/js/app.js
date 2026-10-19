@@ -6637,6 +6637,7 @@ function renderCardsTab(body, lesson, cards) {
         ${listOpen ? `<div class="fc-list" id="fc-list">${checklist}</div>` : ""}
         ${lastNote ? `<div class="fc-note">${lastNote} <button class="btn btn-sm btn-ghost" id="fc-go-review">🎯 去今日学习</button></div>` : ""}
         <div class="flashcard" id="fc">
+          <span class="fc-seen ${isSeen(card) ? "on" : "off"}" title="${isSeen(card) ? `复习过：评过 ${card.reps} 次分，已进入 SM-2 排程` : "还没复习过：这张卡还没评过分"}">${isSeen(card) ? "✓ 已复习" : "🆕 未复习"}</span>
           <div class="card-label">题目</div>
           <div class="card-text" id="fc-text"></div>
         </div>

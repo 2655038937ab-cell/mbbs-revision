@@ -240,11 +240,23 @@ a { color: var(--accent); }
 /* ---------- Flashcards ---------- */
 .flashcard-wrap { max-width: 640px; margin: 0 auto; }
 .flashcard {
+  position: relative;   /* anchors the 已复习/未复习 badge in the card's corner */
   background: var(--surface); border: 1px solid var(--border); border-radius: 18px;
   box-shadow: var(--shadow); min-height: 260px; padding: 30px;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   text-align: center; cursor: pointer; user-select: none; transition: all .2s;
 }
+/* Whether this card has ever been reviewed, in the card's top-right corner. The
+   position line above the card already carries the full schedule; this is the
+   at-a-glance answer that stays put when the card flips. */
+.fc-seen {
+  position: absolute; top: 10px; right: 12px;
+  font-size: 11px; font-weight: 700; line-height: 1.2; padding: 3px 9px;
+  border-radius: 99px; letter-spacing: .02em; pointer-events: none;
+  white-space: nowrap;
+}
+.fc-seen.on { background: var(--brand-soft); color: var(--brand-dark); }
+.fc-seen.off { background: var(--surface-2); color: var(--text-2); }
 .flashcard .card-label { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-3); margin-bottom: 14px; }
 .flashcard .card-text { font-size: 20px; font-weight: 600; line-height: 1.5; }
 .flashcard .card-text.answer { font-size: 17px; font-weight: 500; color: var(--brand-dark); }
@@ -810,6 +822,7 @@ body.pet-hidden #pet-show { display: inline-flex; }
   .grid-3, .grid-4 { grid-template-columns: repeat(2, 1fr); }
   .modal { max-width: 96vw; padding: 20px; margin: 0 auto; }
   .flashcard { min-height: 230px; padding: 24px 18px; }
+  .fc-seen { top: 8px; right: 10px; font-size: 10.5px; padding: 3px 8px; }
   .flashcard .card-text { font-size: 18px; }
   .review-grade { grid-template-columns: repeat(2, 1fr); }
   .tabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }

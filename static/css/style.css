@@ -79,7 +79,12 @@ body {
   border-color: rgba(37, 99, 235, .30); }
 
 /* ---------- Main ---------- */
-#main { flex: 1; margin-left: var(--sidebar-w); min-height: 100vh; }
+/* min-width:0 is load-bearing: #main is a flex item, and a flex item's automatic
+   minimum width is its content's min-content width. Without it a wide row — the
+   lesson tab strip, a wide table, a display formula — makes the whole page wider
+   than the phone viewport, which mobile browsers answer with a zoomed-out
+   (shrink-to-fit) layout. The wide child then scrolls inside its own box instead. */
+#main { flex: 1; min-width: 0; margin-left: var(--sidebar-w); min-height: 100vh; }
 .view { max-width: 1060px; margin: 0 auto; padding: 30px 34px 60px; }
 
 h1 { font-size: 24px; margin: 0 0 6px; }
@@ -807,7 +812,15 @@ body.pet-hidden #pet-show { display: inline-flex; }
   .tabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
   .tab { white-space: nowrap; flex: none; }
   .lesson-item { flex-wrap: wrap; }
-  .lesson-meta { width: 100%; margin-left: 0; }
+  .lesson-meta { width: 100%; margin-left: 0; flex-wrap: wrap; }
+  /* Grid items also default to their min-content width; let them shrink so a long
+     lesson title / group header can wrap instead of widening the page. */
+  .grid > * { min-width: 0; }
+  /* Mind maps are wide by nature: scroll them inside their own box rather than
+     widening the page, and let the node text wrap where it can. */
+  .mindmap2 { overflow-x: auto; max-width: 100%; }
+  .mm-root, .mm-point, .mm-summary { min-width: 0; }
+  .mm-root-title, .mm-point-title { min-width: 0; overflow-wrap: anywhere; }
   .kp-filters, .kp-head { flex-wrap: wrap; }
   .q-option { font-size: 14px; }
   /* The mode notice ("免密模式" / "试用版") is a sidebar column on desktop. Left in

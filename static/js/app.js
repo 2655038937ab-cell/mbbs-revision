@@ -3931,7 +3931,7 @@ async function renderLessons() {
       if (it.type === "group") {
         // show a group header only if it has at least one lesson reaching the cap
         out += `<div style="grid-column:1/-1;margin:14px 0 4px">
-          <div style="font-weight:700;color:var(--text-2);letter-spacing:.04em;display:flex;align-items:center;gap:8px">
+          <div style="font-weight:700;color:var(--text-2);letter-spacing:.04em;display:flex;align-items:center;flex-wrap:wrap;gap:8px">
             <span class="pill pill-brand" style="font-size:11px;letter-spacing:.08em">${escapeHtml(it.g.label)}</span>
             <span class="sub">${it.g.items.length} lesson${it.g.items.length > 1 ? "s" : ""}</span>
             <button class="chip hm-hide-group" data-hidegroup="${escapeHtml(it.g.key)}" title="隐藏这个分组（只影响显示）" style="font-size:11px;padding:2px 9px">👁 隐藏</button>

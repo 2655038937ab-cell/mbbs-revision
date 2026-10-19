@@ -6523,6 +6523,18 @@ function renderCardsTab(body, lesson, cards) {
   const stored = readFcPos(lesson.id);
   let idx = resolveFcPos(stored, deck);
   let firstPaint = true;
+  // A card whose interval just elapsed must be the first thing the tab shows. The
+  // deck already puts due cards first (most recently due first), so when a card
+  // came due since this tab was last opened, open at the top instead of resuming
+  // the last browsed position — otherwise the card graded "有点吃力 → 2 天后复习"
+  // sat above the resumed position and was never the card the tab opened on.
+  if (firstPaint) {
+    const seenKey = "mbbs_fc_seen:" + String(lesson.id);
+    let lastSeen = 0;
+    try { lastSeen = Number(localStorage.getItem(seenKey)) || 0; } catch { /* private mode */ }
+    if (deck[0] && isDue(deck[0]) && Number(deck[0].due || 0) > lastSeen) idx = 0;
+    try { localStorage.setItem(seenKey, String(Date.now())); } catch { /* private mode */ }
+  }
   // What the last grade did, so "完全忘了" can say out loud where (and when) the
   // card comes back: this tab is a browse view and will NOT re-queue it.
   let lastNote = null;
@@ -6755,7 +6767,7 @@ function renderCardsTab(body, lesson, cards) {
     const names = ["完全忘了", "有点吃力", "说得清楚", "太简单了"];
     lastNote = g === 0
       ? `已评「完全忘了」：到期时间 ${intervalLabel(updated.interval)}（现在）。今日学习会把它放回队列（约 8 项之后再问一次）；这个浏览视图不会自动回来。`
-      : `已评「${names[g]}」：下次复习在 ${intervalLabel(updated.interval)} 后（今日学习按此排程出现）。`;
+      : `已评「${names[g]}」：下次复习在 ${intervalLabel(updated.interval)} 后（到期后打开本课闪卡会先看到它；今日学习也按此排程出现）。`;
     grading = false;
     if (filter === "due") {
       // The card just left the due list, so the next one slid into this index.

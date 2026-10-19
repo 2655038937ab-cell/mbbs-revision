@@ -506,7 +506,7 @@ const reviewState = (page) => page.evaluate(() => {
   await pk.close();
 
   // ---------- L. 闪卡顺序：到期的在前（按时间），没做过的按讲义顺序 ----------
-  console.log("\n=== L. deck order: due first by time, then unseen in lecture order ===");
+  console.log("\n=== L. deck order: due first, each group in courseware order ===");
   const nowL = Date.now();
   const mkc = (id, front, reps, due, idx) => ({ id, front, back: front + " B", lessonId: LESSON, ease: 2.5, interval: reps ? 3 : 0, reps, lapses: 0, due, createdAt: nowL - 1e7, source: "", src: { idx, slide: idx + 1, title: "P" + idx } });
   // served deliberately shuffled; two unseen cards out of lecture order too
@@ -533,11 +533,11 @@ const reviewState = (page) => page.evaluate(() => {
     const nx = pl.locator("#fc-next");
     if (await nx.count()) { await nx.click(); await pl.waitForTimeout(130); }
   }
-  const wantL = ["zz-t-newest", "zz-t-middle", "zz-t-oldest", "zz-t-unseen1", "zz-t-unseen5", "zz-t-future"];
+  const wantL = ["zz-t-middle", "zz-t-newest", "zz-t-oldest", "zz-t-unseen1", "zz-t-unseen5", "zz-t-future"];
   console.log(`  deck order: ${JSON.stringify(orderL)}`);
   console.log(`  expected  : ${JSON.stringify(wantL)}`);
   ok(orderL.join("|") === wantL.join("|"),
-    "due cards first (most recently due first), then unseen in lecture order, then seen-but-not-due");
+    "due cards first (in courseware order, not due time), then unseen in lecture order, then seen-but-not-due");
   await pl.close();
 
   // ---------- M. 配图：有图的卡有 img、没图的无占位、只渲染当前卡、懒加载 ----------

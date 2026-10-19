@@ -6502,20 +6502,24 @@ function renderCardsTab(body, lesson, cards) {
   const pointIndex = cardPointIndex(lesson, cards);
   const remembered = rememberedOrder(lesson.id, cards);
   // 闪卡顺序（用户口径）：
-  //   1. 已经做过且到期的卡先出来，按到期时间排——最近到期的在前，越久的越靠后；
-  //   2. 没做过的卡跟在后面，按讲义顺序（课程 → 知识点/幻灯片）；
-  //   3. 做过但还没到期的排最后，同样按讲义顺序。
+  //   1. 已经做过且到期的卡先出来；
+  //   2. 没做过的卡跟在后面；
+  //   3. 做过但还没到期的排最后。
+  // 每组内部一律按课件顺序（课程 → 知识点/幻灯片），不再按到期时间排——
+  // 到期卡之间也按课件顺序，这样整副牌读起来和课件一致。
   const tierOf = (c) => ((c.reps || 0) >= 1 ? (isDue(c) ? 0 : 2) : 1);
-  const deck = cards.slice().sort((a, b) => {
+  // One comparator so the deck can be re-sorted in place after an edit (e.g. 一键忘记
+  // changes a card's bucket) while the reader stays on the same card.
+  const deckOrder = (a, b) => {
     const ta = tierOf(a), tb = tierOf(b);
     if (ta !== tb) return ta - tb;
-    if (ta === 0) { const d = (b.due || 0) - (a.due || 0); if (d) return d; }
     const ia = pointIndex.get(a.id), ib = pointIndex.get(b.id);
     const aA = Number.isFinite(ia), bA = Number.isFinite(ib);
     if (aA !== bA) return aA ? -1 : 1;                 // placed cards first
     if (aA && bA && ia !== ib) return ia - ib;         // ...in courseware order
     return (remembered.get(a.id) ?? 1e9) - (remembered.get(b.id) ?? 1e9);
-  });
+  };
+  const deck = cards.slice().sort(deckOrder);
   let filter = "all";
   const dueList = () => deck.filter((c) => isDue(c));
   const newList = () => deck.filter((c) => !((c.reps || 0) >= 1));
@@ -6523,16 +6527,15 @@ function renderCardsTab(body, lesson, cards) {
   const stored = readFcPos(lesson.id);
   let idx = resolveFcPos(stored, deck);
   let firstPaint = true;
-  // A card whose interval just elapsed must be the first thing the tab shows. The
-  // deck already puts due cards first (most recently due first), so when a card
-  // came due since this tab was last opened, open at the top instead of resuming
-  // the last browsed position — otherwise the card graded "有点吃力 → 2 天后复习"
-  // sat above the resumed position and was never the card the tab opened on.
+  // When a card came due since this tab was last opened, open at the top of the
+  // deck (the 到期 group leads it) instead of resuming the last browsed position —
+  // otherwise cards that just expired sat above the resumed position and the tab
+  // kept opening somewhere in the middle. With nothing newly due, resume as usual.
   if (firstPaint) {
     const seenKey = "mbbs_fc_seen:" + String(lesson.id);
     let lastSeen = 0;
     try { lastSeen = Number(localStorage.getItem(seenKey)) || 0; } catch { /* private mode */ }
-    if (deck[0] && isDue(deck[0]) && Number(deck[0].due || 0) > lastSeen) idx = 0;
+    if (deck.some((c) => isDue(c) && Number(c.due || 0) > lastSeen)) idx = 0;
     try { localStorage.setItem(seenKey, String(Date.now())); } catch { /* private mode */ }
   }
   // What the last grade did, so "完全忘了" can say out loud where (and when) the
@@ -6625,13 +6628,14 @@ function renderCardsTab(body, lesson, cards) {
         ${progressHtml}
         <div class="fc-toolbar">
           <div class="fc-tabs">
-            <button id="fc-f-all" class="fc-tab${filter === "all" ? " on" : ""}" title="排序：到期的在前（最近到期的在前），没做过的按讲义顺序，做过且未到期的最后；排程请看「今日学习」">全部 <b>${deck.length}</b></button>
+            <button id="fc-f-all" class="fc-tab${filter === "all" ? " on" : ""}" title="排序：到期卡在前、没做过其次、做过未到期最后；每组内部按课件顺序（slide/知识点）；排程请看「今日学习」">全部 <b>${deck.length}</b></button>
             <button id="fc-f-new" class="fc-tab${filter === "new" ? " on" : ""}" title="只看没做过的（reps = 0，还没评过分）">🆕 没做过 <b>${newN}</b></button>
             <button id="fc-f-due" class="fc-tab${filter === "due" ? " on" : ""}" title="只显示 SM-2 排程里今天到期的卡片">🔁 到期 <b>${dueN}</b></button>
           </div>
           <button class="btn btn-sm btn-primary" id="fc-today" title="进入今日学习：一次 20 项，位置接着上次继续">${todayLabel}</button>
           ${newN ? `<button class="btn btn-sm btn-ghost" id="fc-jump-new" title="跳到第一张没做过的卡">⏭ 没做过的第一张</button>` : ""}
           <button class="btn btn-sm btn-ghost" id="fc-list-btn" title="展开/收起卡片清单：序号 + 正面前 30 字 + 状态，点一行跳到那张卡">📋 清单 <b>${list.length}</b></button>
+          <button class="btn btn-sm btn-ghost" id="fc-forget" title="把这张卡的复习记录清零：回到「没做过」，到期时间改为现在">🧹 一键忘记</button>
         </div>
         <div class="fc-pos" id="fc-pos">第 ${idx + 1} / ${list.length} 张 · ${st.label}${isDue(card) ? " · 🔁 今天到期" : ""}${backHint} <span id="fc-sched">${schedLabel(card)}</span></div>
         ${listOpen ? `<div class="fc-list" id="fc-list">${checklist}</div>` : ""}
@@ -6682,6 +6686,30 @@ function renderCardsTab(body, lesson, cards) {
     });
     const listBtn = $("#fc-list-btn");
     if (listBtn) listBtn.addEventListener("click", () => { listOpen = !listOpen; render(); });
+    // 一键忘记: wipe this card's SM-2 history and put it back in the "没做过" bucket,
+    // due now. Done immediately (no confirm) and the card stays on screen; its
+    // badge flips to 未复习 and the checker/今日学习 plan see it as new again.
+    const forgetBtn = $("#fc-forget");
+    if (forgetBtn) forgetBtn.addEventListener("click", async () => {
+      if (grading || blockTrialWrite()) return;
+      const c = view()[idx];
+      if (!c) return;
+      grading = true;
+      const forgotten = {
+        ...c, reps: 0, lapses: 0, interval: 0, ease: 2.5,
+        due: Date.now(), newDoneAt: 0,
+      };
+      await db.put("cards", forgotten);
+      const inDeck = deck.findIndex((x) => x.id === c.id);
+      if (inDeck >= 0) deck[inDeck] = forgotten;
+      const inCards = cards.findIndex((x) => x.id === c.id);
+      if (inCards >= 0) cards[inCards] = forgotten;
+      deck.sort(deckOrder);
+      idx = Math.max(0, deck.findIndex((x) => x.id === c.id));
+      lastNote = `已忘记这张卡：复习记录清零，重新算「没做过」，到期时间＝现在。`;
+      grading = false;
+      render();
+    });
     body.querySelectorAll("[data-fc-jump]").forEach((row) => row.addEventListener("click", () => {
       const at = Number(row.dataset.fcJump);
       // The checklist row index addresses the CURRENT view, so a filtered list
@@ -6768,7 +6796,7 @@ function renderCardsTab(body, lesson, cards) {
     const names = ["完全忘了", "有点吃力", "说得清楚", "太简单了"];
     lastNote = g === 0
       ? `已评「完全忘了」：到期时间 ${intervalLabel(updated.interval)}（现在）。今日学习会把它放回队列（约 8 项之后再问一次）；这个浏览视图不会自动回来。`
-      : `已评「${names[g]}」：下次复习在 ${intervalLabel(updated.interval)} 后（到期后打开本课闪卡会先看到它；今日学习也按此排程出现）。`;
+      : `已评「${names[g]}」：下次复习在 ${intervalLabel(updated.interval)} 后（到期后进入本课闪卡的「到期」组，组内按课件顺序；今日学习也按此排程出现）。`;
     grading = false;
     if (filter === "due") {
       // The card just left the due list, so the next one slid into this index.

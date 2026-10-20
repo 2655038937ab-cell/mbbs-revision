@@ -6515,11 +6515,13 @@ function rememberedOrder(lessonId, cards) {
 }
 
 /* ------------------------------------------------------------------
- * 考前复习：公开期末大纲/复习资料里反复出现的高频考点词表（不是 AI 重要度）。
- * 用法是给每门生化课筛出「最常考」的卡；词表刻意只收具体考点，不收“蛋白质/核酸”
- * 这类泛词，避免整课都命中。MUST 里每项至少保一张卡，保证考点覆盖。
+ * 考前复习：按公开期末大纲/复习资料里反复出现的高频考点词表筛卡（不是 AI 重要度）。
+ * 每门课一套词表；先把每个「必考主题」保一张最有代表性的卡，再按考点密度补满，
+ * 最多 60 张，播放顺序仍按课件顺序；只做展示筛选，不改任何卡片数据。
  * ------------------------------------------------------------------ */
-const CRAM_TERMS = {
+const CRAM_META = /本章|学习框架|知识框架|学科定位|里程碑|历史|四阶段|趋势|研究方向|未来|故事|人物|年代|\d{4}年|该工作|请列举.*技术|研究领域|复习提示|学习目标|最终目标/;
+const CRAM_CAP = 60;
+const CRAM_TERMS_BIOCHEM = {
   // 氨基酸/肽
   "等电点": 3, "两性电解质": 2, "肽键": 3, "肽平面": 2, "手性": 2, "对映体": 2, "氨基酸": 1,
   // 二级结构
@@ -6554,32 +6556,79 @@ const CRAM_TERMS = {
   // 修饰
   "m6a": 2, "5mc": 2, "甲基化": 1,
 };
-const CRAM_MUST = ["等电点","肽键","α螺旋","β折叠","拉氏图","疏水效应","分子伴侣","别构","协同效应",
+const CRAM_MUST_BIOCHEM = ["等电点","肽键","α螺旋","β折叠","拉氏图","疏水效应","分子伴侣","别构","协同效应",
   "肌红蛋白","血红蛋白","波尔效应","bpg","镰状细胞","查加夫","双螺旋","增色效应","熔解温度",
   "核小体","超螺旋","核酶","trna","rrna","mrna","mirna","限制性内切酶","sds-page","层析","质谱",
   "western","elisa","edman","变性","缓冲","渗透压","吉布斯自由能","活化能","二硫键","原体",
   "组蛋白","m6a","翻译后修饰","膜转运","gpcr","igg","抗体","盐析","透析","离心","电泳","紫外吸收"];
-const CRAM_META = /本章|学习框架|知识框架|学科定位|里程碑|历史|四阶段|趋势|研究方向|未来|故事|人物|年代|\d{4}年|该工作|请列举.*技术|研究领域|复习提示|学习目标|最终目标/;
-const CRAM_CAP = 60;
-const CRAM_LESSON_RE = /生物化学|生物化學|biochemistry/i;
 
+const CRAM_TERMS_QCB = {
+  // 单细胞 / 异质性 / 噪声
+  "单细胞": 1, "异质性": 3, "群体测量": 2, "群体平均": 2, "bulk": 1, "同基因型": 2,
+  "细胞命运": 1, "细胞状态": 1, "基因表达噪声": 3, "转录爆发": 2, "泊松": 1,
+  "内在噪声": 2, "外在噪声": 2, "稳定个体性": 2, "时间平均": 1,
+  // 流式
+  "流式细胞术": 3, "facs": 3, "荧光激活细胞分选": 3, "流式细胞仪": 2, "成像流式": 2,
+  "imagestream": 2, "激光": 1, "二向色镜": 2, "带通滤光片": 2, "pmt": 2, "细胞分选": 2,
+  "t细胞": 1, "cd4": 1, "cd8": 1,
+  // 单细胞测序
+  "单细胞rna测序": 3, "scrna-seq": 3, "drop-seq": 3, "indrop": 3, "smart-seq2": 3,
+  "10x": 2, "微流控": 2, "逆转录": 2, "cdna扩增": 2, "聚类": 1, "umi": 2,
+  "单细胞基因组测序": 2, "mda": 2, "单细胞分离": 2, "单细胞测序": 3, "测序": 1,
+  // 多组学 / 表观
+  "cite-seq": 3, "reap-seq": 2, "多模态": 2, "sctrio-seq": 2, "dr-seq": 1, "g&t-seq": 1,
+  "scatac-seq": 3, "染色质可及性": 2, "甲基化": 2, "scbs-seq": 1, "组蛋白修饰": 2,
+  // 空间
+  "空间转录组": 3, "merfish": 3, "smfish": 3, "seqfish": 3, "starmap": 2,
+  "原位杂交": 3, "原位测序": 2, "空间条形码": 2, "显微切割": 2, "阵列": 1, "扩展显微镜": 2,
+  // 谱系 / 轨迹
+  "谱系追踪": 3, "拟时序": 3, "monocle": 2, "wishbone": 1, "velocyto": 1, "干性评分": 2, "pseudo-time": 2,
+  // 测序原理
+  "illumina": 3, "桥式扩增": 3, "边合成边测序": 3, "nanopore": 3, "纳米孔": 3,
+  // 成像 / 图像
+  "活细胞成像": 3, "荧光显微镜": 2, "图像分割": 3, "分割": 1, "追踪": 2, "图像处理": 2,
+  "位深": 3, "灰度": 2, "rgb": 1, "像素": 1, "光毒性": 2, "光遗传学": 3, "ras-erk": 3,
+  "基因线路": 2, "生物传感器": 2,
+  // 昼夜节律
+  "昼夜节律": 3, "转录-翻译负反馈": 3, "per": 1, "tim": 1, "scn": 1, "生物钟": 2,
+  // 常规细胞实验
+  "细胞培养": 1, "western blot": 2, "qpcr": 1, "单分子": 2, "免疫荧光": 1, "荧光": 1,
+  "中心法则": 2, "多组学": 1, "高通量": 1,
+};
+const CRAM_MUST_QCB = ["单细胞","异质性","群体测量","流式细胞术","facs","单细胞rna测序","scrna-seq",
+  "drop-seq","10x","逆转录","cdna扩增","单细胞基因组测序","cite-seq","scatac-seq","多模态",
+  "空间转录组","merfish","smfish","原位杂交","原位测序","谱系追踪","拟时序","illumina","nanopore",
+  "活细胞成像","图像分割","追踪","位深","光遗传学","ras-erk","昼夜节律","转录-翻译负反馈",
+  "基因表达噪声","内在噪声","外在噪声","转录爆发","稳定个体性","中心法则","甲基化","显微切割",
+  "成像流式","荧光显微镜"];
+
+const CRAM_SUBJECTS = [
+  { re: /生物化学|生物化學|biochemistry/i, terms: CRAM_TERMS_BIOCHEM, must: CRAM_MUST_BIOCHEM },
+  { re: /定量细胞生物学|quantitative\s*cell/i, terms: CRAM_TERMS_QCB, must: CRAM_MUST_QCB },
+];
+function cramSubject(lesson) {
+  const title = (lesson && lesson.title) || "";
+  return CRAM_SUBJECTS.find((s) => s.re.test(title)) || null;
+}
 function buildCramIds(lesson, cards) {
   const out = new Set();
-  if (!lesson || !CRAM_LESSON_RE.test(lesson.title || "")) return out;
+  const subject = cramSubject(lesson);
+  if (!subject) return out;
   const plain = (t) => String(t || "").toLowerCase()
     .replace(/[（(【\[][^）)】\]]*[）)】\]]/g, "")
     .replace(/[^\p{L}\p{N}]+/gu, "");
+  const table = Object.keys(subject.terms).map((term) => ({ term, weight: subject.terms[term], plain: plain(term) }));
   const entries = (cards || []).map((c) => {
     const text = plain(`${c.front || ""} ${c.back || ""}`);
     let score = 0;
     const matched = new Set();
-    for (const term of Object.keys(CRAM_TERMS)) {
-      if (text.includes(plain(term))) { matched.add(term); score += CRAM_TERMS[term]; }
+    for (const t of table) {
+      if (t.plain && text.includes(t.plain)) { matched.add(t.term); score += t.weight; }
     }
     return { c, score, matched, meta: CRAM_META.test(c.front || "") };
   });
   // 每个必考主题先保一张最有代表性的卡
-  for (const term of CRAM_MUST) {
+  for (const term of subject.must) {
     let best = null;
     for (const e of entries) {
       if (e.meta || !e.matched.has(term)) continue;
@@ -6710,7 +6759,7 @@ function renderCardsTab(body, lesson, cards) {
     if (!list.length) {
       const emptyIcon = filter === "cram" ? "🎯" : filter === "new" ? "🆕" : "⏰";
       const emptyText = filter === "cram"
-        ? "本课没有按高频考点词表筛出卡片（可能这门课不是生化，或卡片内容未覆盖考点）。"
+        ? "本课没有按高频考点词表筛出卡片（卡片内容可能没覆盖词表考点）。"
         : filter === "new" ? "这门课的卡都做过了。" : "今天没有到期的卡片。";
       body.innerHTML = `<div class="flashcard-wrap">${progressHtml}` +
         emptyState(emptyIcon, emptyText,
@@ -6758,7 +6807,7 @@ function renderCardsTab(body, lesson, cards) {
             <button id="fc-f-all" class="fc-tab${filter === "all" ? " on" : ""}" title="排序：到期卡在前、没做过其次、做过未到期最后；每组内部按课件顺序（slide/知识点）；排程请看「今日学习」">全部 <b>${deck.length}</b></button>
             <button id="fc-f-new" class="fc-tab${filter === "new" ? " on" : ""}" title="只看没做过的（reps = 0，还没评过分）">🆕 没做过 <b>${newN}</b></button>
             <button id="fc-f-due" class="fc-tab${filter === "due" ? " on" : ""}" title="只显示 SM-2 排程里今天到期的卡片">🔁 到期 <b>${dueN}</b></button>
-            ${CRAM_LESSON_RE.test(lesson.title || "") ? `<button id="fc-f-cram" class="fc-tab cram${filter === "cram" ? " on" : ""}" title="考前复习：按公开期末高频考点词表筛出的本课最常考卡片（最多 ${CRAM_CAP} 张），仍按课件顺序；不按 AI 重要度">🎯 考前复习 <b>${cramIds.size}</b></button>` : ""}
+            ${cramSubject(lesson) ? `<button id="fc-f-cram" class="fc-tab cram${filter === "cram" ? " on" : ""}" title="考前复习：按公开期末高频考点词表筛出的本课最常考卡片（最多 ${CRAM_CAP} 张），仍按课件顺序；不按 AI 重要度">🎯 考前复习 <b>${cramIds.size}</b></button>` : ""}
           </div>
           <button class="btn btn-sm btn-primary" id="fc-today" title="进入今日学习：一次 20 项，位置接着上次继续">${todayLabel}</button>
           ${newN ? `<button class="btn btn-sm btn-ghost" id="fc-jump-new" title="跳到第一张没做过的卡">⏭ 没做过的第一张</button>` : ""}

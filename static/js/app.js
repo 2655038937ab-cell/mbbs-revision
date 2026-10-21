@@ -6519,7 +6519,7 @@ function rememberedOrder(lessonId, cards) {
  * 每门课一套词表；先把每个「必考主题」保一张最有代表性的卡，再按考点密度补满，
  * 最多 60 张，播放顺序仍按课件顺序；只做展示筛选，不改任何卡片数据。
  * ------------------------------------------------------------------ */
-const CRAM_META = /本章|学习框架|知识框架|学科定位|里程碑|历史|四阶段|趋势|研究方向|未来|故事|人物|年代|\d{4}年|该工作|请列举.*技术|研究领域|复习提示|学习目标|最终目标/;
+const CRAM_META = /本章|学习框架|知识框架|学科定位|里程碑|历史|四阶段|趋势|研究方向|未来|故事|人物|年代|\d{4}年|该工作|请列举.*技术|研究领域|复习提示|学习目标|最终目标|chapter overview|course overview|learning objectives|study framework|milestone|history|research direction|future direction|final goal|researchers|scientists|\b(19|20)\d{2}s?\b/i;
 const CRAM_CAP = 60;
 const CRAM_TERMS_BIOCHEM = {
   // 氨基酸/肽
@@ -6563,48 +6563,62 @@ const CRAM_MUST_BIOCHEM = ["等电点","肽键","α螺旋","β折叠","拉氏图
   "组蛋白","m6a","翻译后修饰","膜转运","gpcr","igg","抗体","盐析","透析","离心","电泳","紫外吸收"];
 
 const CRAM_TERMS_QCB = {
-  // 单细胞 / 异质性 / 噪声
-  "单细胞": 1, "异质性": 3, "群体测量": 2, "群体平均": 2, "bulk": 1, "同基因型": 2,
-  "细胞命运": 1, "细胞状态": 1, "基因表达噪声": 3, "转录爆发": 2, "泊松": 1,
-  "内在噪声": 2, "外在噪声": 2, "稳定个体性": 2, "时间平均": 1,
-  // 流式
-  "流式细胞术": 3, "facs": 3, "荧光激活细胞分选": 3, "流式细胞仪": 2, "成像流式": 2,
-  "imagestream": 2, "激光": 1, "二向色镜": 2, "带通滤光片": 2, "pmt": 2, "细胞分选": 2,
-  "t细胞": 1, "cd4": 1, "cd8": 1,
-  // 单细胞测序
-  "单细胞rna测序": 3, "scrna-seq": 3, "drop-seq": 3, "indrop": 3, "smart-seq2": 3,
-  "10x": 2, "微流控": 2, "逆转录": 2, "cdna扩增": 2, "聚类": 1, "umi": 2,
-  "单细胞基因组测序": 2, "mda": 2, "单细胞分离": 2, "单细胞测序": 3, "测序": 1,
-  // 多组学 / 表观
-  "cite-seq": 3, "reap-seq": 2, "多模态": 2, "sctrio-seq": 2, "dr-seq": 1, "g&t-seq": 1,
-  "scatac-seq": 3, "染色质可及性": 2, "甲基化": 2, "scbs-seq": 1, "组蛋白修饰": 2,
-  // 空间
-  "空间转录组": 3, "merfish": 3, "smfish": 3, "seqfish": 3, "starmap": 2,
-  "原位杂交": 3, "原位测序": 2, "空间条形码": 2, "显微切割": 2, "阵列": 1, "扩展显微镜": 2,
-  // 谱系 / 轨迹
-  "谱系追踪": 3, "拟时序": 3, "monocle": 2, "wishbone": 1, "velocyto": 1, "干性评分": 2, "pseudo-time": 2,
-  // 测序原理
-  "illumina": 3, "桥式扩增": 3, "边合成边测序": 3, "nanopore": 3, "纳米孔": 3,
-  // 成像 / 图像
-  "活细胞成像": 3, "荧光显微镜": 2, "图像分割": 3, "分割": 1, "追踪": 2, "图像处理": 2,
-  "位深": 3, "灰度": 2, "rgb": 1, "像素": 1, "光毒性": 2, "光遗传学": 3, "ras-erk": 3,
-  "基因线路": 2, "生物传感器": 2,
-  // 昼夜节律
-  "昼夜节律": 3, "转录-翻译负反馈": 3, "per": 1, "tim": 1, "scn": 1, "生物钟": 2,
-  // 常规细胞实验
-  "细胞培养": 1, "western blot": 2, "qpcr": 1, "单分子": 2, "免疫荧光": 1, "荧光": 1,
-  "中心法则": 2, "多组学": 1, "高通量": 1,
+  // single-cell / heterogeneity / noise
+  "single-cell": 2, "heterogeneity": 3, "population-level": 2, "ensemble average": 3, "time average": 2,
+  "stable individuality": 3, "isogenic": 2, "gene expression noise": 3, "transcriptional bursting": 2,
+  "intrinsic noise": 2, "extrinsic noise": 2, "poisson": 1, "pre-determined": 2,
+  // flow cytometry
+  "flow cytometry": 3, "facs": 3, "forward scatter": 2, "side scatter": 2, "photomultiplier": 2,
+  "dichroic": 2, "bandpass": 2, "flow cell": 2, "imaging flow cytometry": 2, "imagestream": 2,
+  // single-cell sequencing
+  "scrna-seq": 3, "single-cell rna": 3, "drop-seq": 3, "indrop": 3, "smart-seq2": 3, "10x": 2,
+  "microfluidic": 2, "reverse transcription": 2, "cdna amplification": 2, "combinatorial indexing": 2,
+  "umi": 2, "single-cell genome": 2, "whole-genome amplification": 2, "mda": 2,
+  "scatac-seq": 3, "chromatin accessibility": 2, "methylation": 2, "histone modification": 2,
+  "cite-seq": 3, "reap-seq": 2, "multimodal": 2, "multi-omics": 2, "sctrio-seq": 2, "dr-seq": 1, "g&t-seq": 1,
+  // spatial
+  "spatial transcriptomics": 3, "merfish": 3, "smfish": 3, "seqfish": 3, "starmap": 2,
+  "in situ hybridization": 3, "in situ sequencing": 2, "spatial barcode": 2, "microdissection": 2,
+  "expansion microscopy": 2, "rolling circle amplification": 2,
+  // lineage / pseudotime
+  "lineage tracing": 3, "pseudotime": 3, "monocle": 2, "wishbone": 1, "velocyto": 1, "stemness": 2,
+  "rna velocity": 2,
+  // sequencing
+  "illumina": 3, "bridge amplification": 3, "sequencing by synthesis": 3, "nanopore": 3,
+  "motor protein": 2, "long read": 2,
+  // imaging / image analysis
+  "live-cell imaging": 3, "fluorescence microscopy": 2, "image segmentation": 3, "segmentation": 1,
+  "tracking": 2, "image processing": 2, "bit depth": 3, "grayscale": 2, "rgb": 1, "phototoxicity": 2,
+  // signaling / clock
+  "optogenetics": 3, "ras-erk": 3, "circadian": 3, "transcription-translation feedback": 3, "ttfl": 2, "scn": 1,
+  // membranes / transport / compartments
+  "membrane potential": 3, "resting potential": 2, "action potential": 2, "membrane transport": 3,
+  "ion channel": 2, "carrier protein": 2, "active transport": 2, "passive transport": 2,
+  "endocytosis": 2, "exocytosis": 2, "nernst": 3, "goldman": 2, "cell membrane": 2,
+  "phospholipid": 2, "cholesterol": 2, "membrane fluidity": 2, "lipid raft": 2, "transmembrane": 2,
+  "integral membrane": 2, "peripheral membrane": 2, "endoplasmic reticulum": 2, "golgi": 2,
+  "lysosome": 2, "mitochondri": 2, "endosome": 2, "vesicle": 2, "clathrin": 2, "signal peptide": 2,
+  "glycosylation": 2, "cytoskeleton": 2, "cell junction": 2, "extracellular matrix": 2,
+  // techniques
+  "cell culture": 2, "tissue culture": 2, "microscopy": 1, "electron microscopy": 2,
+  "immunofluorescence": 2, "centrifugation": 2, "chromatography": 2, "electrophoresis": 2,
+  "mass spectrometry": 2, "western blot": 2, "proteomics": 2, "single molecule": 2, "copy number": 2,
+  "subclone": 1, "tumor heterogeneity": 2, "cell state": 1, "cell fate": 1,
 };
-const CRAM_MUST_QCB = ["单细胞","异质性","群体测量","流式细胞术","facs","单细胞rna测序","scrna-seq",
-  "drop-seq","10x","逆转录","cdna扩增","单细胞基因组测序","cite-seq","scatac-seq","多模态",
-  "空间转录组","merfish","smfish","原位杂交","原位测序","谱系追踪","拟时序","illumina","nanopore",
-  "活细胞成像","图像分割","追踪","位深","光遗传学","ras-erk","昼夜节律","转录-翻译负反馈",
-  "基因表达噪声","内在噪声","外在噪声","转录爆发","稳定个体性","中心法则","甲基化","显微切割",
-  "成像流式","荧光显微镜"];
+const CRAM_MUST_QCB = ["single-cell", "heterogeneity", "population-level", "flow cytometry", "facs",
+  "scrna-seq", "single-cell rna", "drop-seq", "10x", "reverse transcription", "cdna amplification",
+  "single-cell genome", "cite-seq", "scatac-seq", "multimodal", "spatial transcriptomics", "merfish",
+  "smfish", "in situ hybridization", "in situ sequencing", "lineage tracing", "pseudotime", "illumina",
+  "nanopore", "live-cell imaging", "image segmentation", "tracking", "bit depth", "optogenetics",
+  "ras-erk", "circadian", "transcription-translation feedback", "gene expression noise", "intrinsic noise",
+  "extrinsic noise", "transcriptional bursting", "stable individuality", "methylation", "microdissection",
+  "imaging flow cytometry", "fluorescence microscopy", "membrane potential", "membrane transport",
+  "cell membrane", "ion channel", "endocytosis", "exocytosis", "endoplasmic reticulum", "golgi",
+  "lysosome", "mitochondri", "cytoskeleton", "microscopy"];
 
 const CRAM_SUBJECTS = [
   { re: /生物化学|生物化學|biochemistry/i, terms: CRAM_TERMS_BIOCHEM, must: CRAM_MUST_BIOCHEM },
-  { re: /定量细胞生物学|quantitative\s*cell/i, terms: CRAM_TERMS_QCB, must: CRAM_MUST_QCB },
+  { re: /定量细胞生物学|quantitative\s*cell|lecture\s*1\.3|single-cell techniques|essential techniques in cell biology|overview 20260909|cell membrane|membrane transport|membrane potential|intracellular compartments/i, terms: CRAM_TERMS_QCB, must: CRAM_MUST_QCB },
 ];
 function cramSubject(lesson) {
   const title = (lesson && lesson.title) || "";

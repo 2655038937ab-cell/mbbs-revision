@@ -4430,7 +4430,15 @@ async function renderLessonDetailBody() {
   const lesson = await getLessonFull(currentLessonId);
   if (!lesson) { navigate("lessons"); return; }
   // Restore the per-point English choices once per lesson per session.
-  if (!enViewLoaded.has(lesson.id)) { enViewLoaded.add(lesson.id); loadEnView(lesson.id); }
+  if (!enViewLoaded.has(lesson.id)) { enViewLoaded.add(lesson.id); loadEnView(lesson); }
+  // One-click whole-lecture language flip. The English text is cached on each
+  // point (p.en), so this toggles instantly and never calls the AI again; the
+  // original Chinese stays the canonical text.
+  const hasEnPoints = (lesson.points || []).some((p) => p && p.en && p.en.title);
+  const allEnPoints = hasEnPoints && (lesson.points || []).every((p, i) => pointIsEnglish(lesson, i, p));
+  const langBtn = hasEnPoints
+    ? `<button class="btn btn-sm btn-ghost" id="btn-lang-toggle" title="${allEnPoints ? "把整门课切回中文原文（英文已缓存，可随时再切回）" : "把整门课切换为英文（已缓存，不用再调用 AI）"}">🌐 ${allEnPoints ? "回到中文" : "English"}</button>`
+    : "";
   const [cards, quizRecs, , formulaDocs] = await Promise.all([
     db.getAllByIndex("cards", "lessonId", currentLessonId),
     db.getAllByIndex("quizzes", "lessonId", currentLessonId),
@@ -4473,13 +4481,15 @@ async function renderLessonDetailBody() {
     $("#view").innerHTML = `
       <div class="page-head" style="margin-bottom:12px">
         <div class="title-wrap"><h1>${escapeHtml(lesson.title)}</h1><p class="sub">${lesson.points?.length || 0} points</p></div>
-        <div style="display:flex;gap:5px;align-items:center">${switchBtns}${immersiveBtn}</div>
+        <div style="display:flex;gap:5px;align-items:center">${switchBtns}${immersiveBtn}${langBtn}</div>
       </div>
       <div id="tab-body-immersive"></div>`;
     $("#btn-prev-lesson").addEventListener("click", () => { if (prevId) openLesson(prevId); });
     $("#btn-back").addEventListener("click", () => navigate("lessons"));
     $("#btn-next-lesson").addEventListener("click", () => { if (nextId) openLesson(nextId); });
     $("#btn-immersive").addEventListener("click", () => { immersiveOn = false; renderLessonDetail({ resetScroll: true }); });
+    const langImmersive = $("#btn-lang-toggle");
+    if (langImmersive) langImmersive.addEventListener("click", () => setAllPointsLanguage(lesson, !allEnPoints));
     renderImmersivePoints(lesson);
     return;
   }
@@ -4504,6 +4514,7 @@ async function renderLessonDetailBody() {
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;justify-content:flex-end">
         ${switchBtns}
         ${immersiveBtn}
+        ${langBtn}
         <button class="btn btn-accent" id="btn-gen">✨ 一键生成</button>
         <button class="btn btn-sm btn-ghost" id="btn-gen-points" title="只重新提炼知识点">📌 知识点</button>
         <button class="btn btn-sm btn-ghost" id="btn-gen-cards" title="只重新生成闪卡">🃏 闪卡</button>
@@ -4527,6 +4538,8 @@ async function renderLessonDetailBody() {
   $("#btn-back").addEventListener("click", () => navigate("lessons"));
   $("#btn-next-lesson").addEventListener("click", () => { if (nextId) openLesson(nextId); });
   $("#btn-immersive").addEventListener("click", () => { immersiveOn = true; currentTab = "points"; renderLessonDetail({ resetScroll: true }); });
+  const langToggle = $("#btn-lang-toggle");
+  if (langToggle) langToggle.addEventListener("click", () => setAllPointsLanguage(lesson, !allEnPoints));
   const gotoPos = $("#btn-goto-readpos");
   if (gotoPos) gotoPos.addEventListener("click", () => {
     const p = readPosGet(lesson.id);
@@ -5957,15 +5970,34 @@ function renderPointTree(node, lesson, depth, shownSlides, path = "") {
 const enViewState = new Map(); // "lessonId:pointIndex" -> showing English?
 const enKey = (lessonId, idx) => `${lessonId}:${idx}`;
 
+// Is this point currently shown in English? Explicit flips win; otherwise a
+// lesson-level default (used by the QCB lectures, whose notes were translated
+// in place) decides. This is what makes the 🌐 button able to come back to the
+// original Chinese text.
+function pointIsEnglish(lesson, idx, p) {
+  if (!(p && p.en && p.en.title)) return false;
+  const key = enKey(lesson.id, idx);
+  if (enViewState.has(key)) return !!enViewState.get(key);
+  return !!(lesson && lesson.langDefault === "en");
+}
+
 // Remember which points you flipped to English, per lesson, so a refresh (or
 // coming back later) does not silently revert them. Kept in localStorage rather
 // than the lesson record: it is a reading preference, not study data.
-function loadEnView(lessonId) {
+function loadEnView(lesson) {
+  const lessonId = lesson && lesson.id;
+  if (!lessonId) return;
   try {
     const raw = localStorage.getItem("mbbs_en_view_" + lessonId);
-    if (!raw) return;
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr)) arr.forEach((i) => enViewState.set(enKey(lessonId, Number(i)), true));
+    if (raw) {
+      // Stored list = the points explicitly flipped to English; every other
+      // point is Chinese (so "all Chinese" is representable as []).
+      (lesson.points || []).forEach((_, i) => enViewState.set(enKey(lessonId, i), false));
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) arr.forEach((i) => enViewState.set(enKey(lessonId, Number(i)), true));
+    } else if (lesson.langDefault === "en") {
+      (lesson.points || []).forEach((_, i) => enViewState.set(enKey(lessonId, i), true));
+    }
   } catch { /* ignore */ }
 }
 
@@ -6035,7 +6067,7 @@ function applyPointLanguage(lesson, idx) {
   const card = document.getElementById("kp-" + idx);
   const point = (lesson.points || [])[idx];
   if (!card || !point) return false;
-  const showEn = !!(point.en && point.en.title && enViewState.get(enKey(lesson.id, idx)));
+  const showEn = pointIsEnglish(lesson, idx, point);
   const terms = (point.keyTerms && point.keyTerms.length) ? point.keyTerms : titleWords(point.title);
 
   const sub = card.querySelector(".kp-subtitle");
@@ -6082,7 +6114,7 @@ async function flipPointToEnglish(lesson, idx, btn) {
   if (!point) return;
   // Already translated: just toggle, no AI call.
   if (point.en && point.en.title) {
-    enViewState.set(enKey(lesson.id, idx), !enViewState.get(enKey(lesson.id, idx)));
+    enViewState.set(enKey(lesson.id, idx), !pointIsEnglish(lesson, idx, point));
     saveEnView(lesson.id);
     // In-place repaint: the page keeps its scroll position.
     if (!applyPointLanguage(lesson, idx)) renderLessonDetail();
@@ -6166,7 +6198,7 @@ function pointSection(p, lesson, shownSlides) {
   const manualFigs = (Array.isArray(p.figures) ? p.figures : []).filter((f) => f && f.dataUrl);
   // English view: on-demand translation cached on the point itself (`p.en`), so
   // flipping back and forth is free after the first translation.
-  const showEn = !!(p.en && p.en.title && enViewState.get(enKey(lesson.id, idx)));
+  const showEn = pointIsEnglish(lesson, idx, p);
   const dispTitle = showEn ? p.en.title : p.title;
   const dispBody = showEn ? (p.en.explanation || "") : explanationText(p.explanation);
   const dispSupp = showEn ? (p.en.supplement || "") : (p.supplement || "");

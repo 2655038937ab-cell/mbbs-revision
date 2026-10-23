@@ -1012,6 +1012,22 @@ function openModal(html) {
 }
 function closeModal() { $("#modal-root").innerHTML = ""; }
 
+/* Full-screen image viewer for slide pages. The normal modal is capped at 720px,
+ * which is too small to read an original slide; this one fills the viewport and
+ * a click on the image toggles between fit and 1:1 (scroll to pan). */
+function openImageLightbox(src, title) {
+  $("#modal-root").innerHTML =
+    `<div class="modal-backdrop img-backdrop" id="mb"><div class="modal modal-img">`
+    + `<div class="modal-img-head"><span>${escapeHtml(title || "原 slide")}</span><span class="sub">点击图片切换原尺寸 · 点背景关闭</span></div>`
+    + `<img src="${src}" alt="">`
+    + `</div></div>`;
+  const mb = $("#mb");
+  if (!mb) return;
+  mb.addEventListener("mousedown", (e) => { if (e.target.id === "mb") closeModal(); });
+  const img = mb.querySelector("img");
+  if (img) img.addEventListener("click", () => { img.classList.toggle("zoom-100"); });
+}
+
 function confirmGenerate(message, fn) {
   openModal(`
     <h2>确认生成</h2>
@@ -6462,7 +6478,7 @@ function paintCardFigure(hostId, card, lesson, pointIdx, withCaption) {
     img.addEventListener("error", () => { host.innerHTML = ""; });   // silent downgrade
     img.addEventListener("click", (e) => {
       e.preventDefault(); e.stopPropagation();
-      openModal(`<img src="${im.dataUrl}" style="max-width:100%;max-height:80vh;object-fit:contain;border-radius:10px">`);
+      openImageLightbox(im.dataUrl, im.kind === "page" ? "原 slide" : "配图");
     });
   };
   const key = String(lesson && lesson.id);
@@ -6587,6 +6603,19 @@ const CRAM_TERMS_BIOCHEM = {
   "转录": 1, "翻译": 1, "密码子": 1, "限制性内切酶": 2, "pcr": 1, "sanger": 1,
   // 修饰
   "m6a": 2, "5mc": 2, "甲基化": 1,
+  // 第 5 章 蛋白质探究（结构预测 / 质谱 / 前沿方法）
+  "结构预测": 3, "蛋白质结构预测": 3, "alphafold": 3, "传统结构预测": 3, "多重序列比对": 2, "msa": 2,
+  "分子动力学": 3, "增强采样": 2, "粗粒化": 2, "空间蛋白质组学": 3, "超分辨": 2, "单分子追踪": 2,
+  "交联质谱": 3, "xl-ms": 3, "有限蛋白酶解": 2, "in-cell nmr": 3, "核磁": 2, "冷冻电镜": 2,
+  "蛋白质组": 2, "定量蛋白质组": 2, "深度学习": 1, "结构解析": 1, "蛋白质研究": 1, "端到端": 2,
+  "时间尺度": 2, "全原子": 2, "单分子": 2, "空间分辨": 2, "结构生物学": 2, "细胞内核磁": 3,
+  "蛋白质结构": 2, "构象采样": 2, "能量景观": 2, "自由能": 2,
+  // 第 7 章 核酸探究（分离 / 表征 / 杂交 / 互作）
+  "核酸分离": 2, "分离纯化": 1, "苯酚": 2, "氯仿": 2, "碱裂解": 2, "质粒": 2, "磁珠": 1, "硅醇": 1,
+  "乙醇沉淀": 1, "a260": 3, "a280": 2, "比尔": 2, "凝胶电泳": 2, "琼脂糖": 2, "亚硫酸氢盐": 2,
+  "过钌酸盐": 1, "分子杂交": 3, "southern": 3, "northern": 3, "原位杂交": 3, "emsa": 3,
+  "凝胶阻滞": 2, "染色质免疫沉淀": 3, "chip": 3, "足迹": 2, "dnase": 2, "qpcr": 2, "荧光定量pcr": 2,
+  "高通量测序": 2, "核酸纯化": 2, "核酸定量": 2, "核酸研究": 1,
 };
 const CRAM_MUST_BIOCHEM = ["等电点","肽键","α螺旋","β折叠","拉氏图","疏水效应","分子伴侣","别构","协同效应",
   "肌红蛋白","血红蛋白","波尔效应","bpg","镰状细胞","查加夫","双螺旋","增色效应","熔解温度",
@@ -6649,7 +6678,7 @@ const CRAM_MUST_QCB = ["single-cell", "heterogeneity", "population-level", "flow
   "lysosome", "mitochondri", "cytoskeleton", "microscopy"];
 
 const CRAM_SUBJECTS = [
-  { re: /生物化学|生物化學|biochemistry/i, terms: CRAM_TERMS_BIOCHEM, must: CRAM_MUST_BIOCHEM },
+  { re: /生物化学|生物化學|biochemistry|核酸探究/i, terms: CRAM_TERMS_BIOCHEM, must: CRAM_MUST_BIOCHEM },
   { re: /定量细胞生物学|quantitative\s*cell|lecture\s*1\.3|single-cell techniques|essential techniques in cell biology|overview 20260909|cell membrane|membrane transport|membrane potential|intracellular compartments/i, terms: CRAM_TERMS_QCB, must: CRAM_MUST_QCB },
 ];
 function cramSubject(lesson) {

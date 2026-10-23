@@ -8881,6 +8881,21 @@ async function generateStudySet(lessonId, regenerate = false) {
 
   if (pm.isCancelled()) { pm.cancelled(); return; }
 
+  // Persist the knowledge points BEFORE the slower card/quiz steps. Points are
+  // the expensive part (all the slide reading and vision work) and the old code
+  // only saved them at the very end, so a stalled quiz call (or a server restart
+  // mid-generation) threw the whole lesson away. With this save a late failure
+  // keeps the points, and 🃏 闪卡 / 📝 题目 can finish the lesson separately.
+  try {
+    lesson.points = points;
+    lesson.updatedAt = Date.now();
+    await db.put("lessons", lesson);
+    fullLessonCache.set(lesson.id, lesson);
+    pm.msg(`已保存 ${points.length} 个知识点（之后即使中断也不会丢）`);
+  } catch (e) {
+    console.warn("early point save failed", e);
+  }
+
   // Step — flashcards
   pm.addStep("Generate flashcards");
   let cards = [];

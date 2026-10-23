@@ -11,13 +11,33 @@ export function setToken(t) {
   else localStorage.removeItem("mbbs_token");
 }
 
-// Fetch that attaches the auth token and clears it on 401.
+// Fetch that attaches the auth token and clears it on 401. `timeoutMs` aborts a
+// request that never comes back (e.g. the server was restarted mid-generation,
+// which left the old fetch hanging forever and the progress panel frozen).
 export async function authedFetch(url, opts = {}) {
-  const headers = { ...(opts.headers || {}) };
+  const { timeoutMs, ...rest } = opts;
+  const headers = { ...(rest.headers || {}) };
   if (_token) headers["Authorization"] = "Bearer " + _token;
-  const resp = await fetch(url, { ...opts, headers });
-  if (resp.status === 401) setToken("");
-  return resp;
+  let timer = null, ctrl = null;
+  if (timeoutMs) {
+    ctrl = new AbortController();
+    rest.signal = ctrl.signal;
+    timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  }
+  try {
+    const resp = await fetch(url, { ...rest, headers });
+    if (resp.status === 401) setToken("");
+    return resp;
+  } catch (e) {
+    if (e && (e.name === "AbortError" || (ctrl && ctrl.signal && ctrl.signal.aborted))) {
+      const err = new Error("timeout");
+      err.timeout = true;
+      throw err;
+    }
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 // Trial mode (set from the server's config): this browser may browse but not spend
@@ -44,8 +64,9 @@ async function withRetry(fn, retries = 2) {
     try {
       data = await fn();
     } catch (e) {
-      data = { error: String((e && e.message) || e) };
+      data = { error: String((e && e.message) || e), timeout: !!(e && e.timeout) };
     }
+    if (data && data.timeout === true) return data;   // a 5-min stall should surface, not repeat
     const msg = (data && data.error) || "";
     const transient =
       !data || data.timeout === true ||
@@ -130,6 +151,7 @@ export const api = {
     const ctx = (typeof window !== "undefined" && window.__llmCtx) || {};
     return withRetry(async () => {
       const resp = await authedFetch("/api/llm", {
+        timeoutMs: 300000,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -156,6 +178,7 @@ export const api = {
     const ctx = (typeof window !== "undefined" && window.__llmCtx) || {};
     return withRetry(async () => {
       const resp = await authedFetch("/api/vision", {
+        timeoutMs: 300000,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -1010,15 +1010,19 @@ function openModal(html) {
     if (e.target.id === "mb") closeModal();
   });
 }
-function closeModal() { $("#modal-root").innerHTML = ""; }
+function closeModal() {
+  $("#modal-root").innerHTML = "";
+  if (_lightboxKeyHandler) { document.removeEventListener("keydown", _lightboxKeyHandler, true); _lightboxKeyHandler = null; }
+}
 
 /* Full-screen image viewer for slide pages. The normal modal is capped at 720px,
  * which is too small to read an original slide; this one fills the viewport and
  * a click on the image toggles between fit and 1:1 (scroll to pan). */
+let _lightboxKeyHandler = null;
 function openImageLightbox(src, title) {
   $("#modal-root").innerHTML =
     `<div class="modal-backdrop img-backdrop" id="mb"><div class="modal modal-img">`
-    + `<div class="modal-img-head"><span>${escapeHtml(title || "原 slide")}</span><span class="sub">点击图片切换原尺寸 · 点背景关闭</span></div>`
+    + `<div class="modal-img-head"><span>${escapeHtml(title || "原 slide")}</span><span class="sub">点击图片切换原尺寸 · 空格 / Esc 返回 · 点背景关闭</span></div>`
     + `<img src="${src}" alt="">`
     + `</div></div>`;
   const mb = $("#mb");
@@ -1026,6 +1030,17 @@ function openImageLightbox(src, title) {
   mb.addEventListener("mousedown", (e) => { if (e.target.id === "mb") closeModal(); });
   const img = mb.querySelector("img");
   if (img) img.addEventListener("click", () => { img.classList.toggle("zoom-100"); });
+  // Space (and Esc) go back to the page you were on. Capture phase + stop so the
+  // flashcard's own space shortcut cannot fire underneath the lightbox.
+  if (_lightboxKeyHandler) document.removeEventListener("keydown", _lightboxKeyHandler, true);
+  _lightboxKeyHandler = (e) => {
+    if (e.key !== " " && e.code !== "Space" && e.key !== "Escape" && e.key !== "Esc") return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    closeModal();
+  };
+  document.addEventListener("keydown", _lightboxKeyHandler, true);
 }
 
 function confirmGenerate(message, fn) {

@@ -8041,9 +8041,9 @@ async function openUpload() {
     <div id="up-list"></div>
     <div class="field" style="margin-top:12px"><label>课程标题（留空则用第一个文件名）</label>
       <input type="text" id="up-title" placeholder="如：生理学 第3章 代谢" style="width:100%"></div>
-    <div class="field"><label class="sub">放进哪个文件夹</label>
+    <div class="field"><label class="sub">放进哪个文件夹 <span style="color:var(--danger,#dc2626)">*必选</span></label>
       <select id="up-folder" class="search-select" style="width:100%"></select>
-      <div class="hint">上传后这些课程直接归类；留「未分类」也行，之后可在课程列表里批量移动。</div>
+      <div class="hint">上传前必须选择文件夹；还没有文件夹就选「＋ 新建文件夹…」。不再允许传到「未分类」。</div>
     </div>
     <div class="field"><label>补充说明（可选）</label>
       <textarea id="up-brief" rows="3" placeholder="如：本部分对应教材第3章，重点讲代谢调控；第10-15页是考点" style="width:100%;resize:vertical;font-family:inherit"></textarea>
@@ -8102,29 +8102,42 @@ async function openUpload() {
       renderList();
     }));
   };
-  // Fill the folder picker and remember the last destination.
-  {
-    const sel = $("#up-folder");
-    if (sel) {
-      sel.innerHTML = `<option value="">📁 未分类</option>`
-        + upFolders.map((f) => `<option value="${f.id}">📁 ${escapeHtml(f.name)}</option>`).join("")
-        + `<option value="__new__">＋ 新建文件夹…</option>`;
-      let last = "";
-      try { last = localStorage.getItem("mbbs_up_folder") || ""; } catch { /* ignore */ }
-      if (last && upFolders.some((f) => f.id === last)) sel.value = last;
-    }
-  }
+  // Fill the folder picker. Uploading requires a real folder, so there is no
+  // "未分类" entry: preselect the last destination (or the first folder), and
+  // pick "__new__" to create one without leaving the sheet.
+  const upFolderSel = $("#up-folder");
+  const fillFolderSelect = (selected) => {
+    if (!upFolderSel) return;
+    upFolderSel.innerHTML = `<option value="" disabled>请选择文件夹…</option>`
+      + upFolders.map((f) => `<option value="${f.id}">📁 ${escapeHtml(f.name)}</option>`).join("")
+      + `<option value="__new__">＋ 新建文件夹…</option>`;
+    upFolderSel.value = (selected && upFolders.some((f) => f.id === selected)) ? selected : "";
+  };
+  fillFolderSelect("");
+  if (upFolderSel) upFolderSel.addEventListener("change", async () => {
+    if (upFolderSel.value !== "__new__") return;
+    const name = (typeof prompt === "function" ? prompt("新文件夹名（上传必须归入文件夹）") : "") || "";
+    if (!name.trim()) { fillFolderSelect(""); return; }
+    const rec = { id: uid(), name: name.trim(), createdAt: Date.now() };
+    await db.put("folders", rec);
+    upFolders.push(rec);
+    fillFolderSelect(rec.id);
+    toast(`已新建文件夹「${rec.name}」`, "success");
+  });
   // Turn the picker into a folder id, creating the folder when asked for a new one.
   const resolveUploadFolder = async () => {
     const sel = $("#up-folder");
     let v = sel ? sel.value : "";
     if (v === "__new__") {
-      const name = (typeof prompt === "function" ? prompt("新文件夹名") : "") || "";
+      const name = (typeof prompt === "function" ? prompt("新文件夹名（上传必须归入文件夹）") : "") || "";
       if (!name.trim()) return "";
       const rec = { id: uid(), name: name.trim(), createdAt: Date.now() };
       await db.put("folders", rec);
+      upFolders.push(rec);
+      fillFolderSelect(rec.id);
       v = rec.id;
     }
+    if (!v || !upFolders.some((f) => f.id === v)) return "";
     try { localStorage.setItem("mbbs_up_folder", v || ""); } catch { /* ignore */ }
     return v;
   };
@@ -8194,8 +8207,15 @@ async function openUpload() {
   $("#up-go").addEventListener("click", async () => {
     if (uploading) return;
     if (!picked.length) { toast("请先选择文件", "error"); return; }
+    const folderId = await resolveUploadFolder();
+    if (!folderId) {
+      toast("请先选择文件夹：上传的课程必须归入某个文件夹（没有就选「＋ 新建文件夹…」）", "error");
+      const sel = $("#up-folder");
+      if (sel) { sel.focus(); sel.style.borderColor = "var(--danger,#dc2626)"; }
+      return;
+    }
     uploading = true;
-    pendingUploadFolderId = await resolveUploadFolder();
+    pendingUploadFolderId = folderId;
     const btn = $("#up-go");
     const original = btn.textContent;
     btn.disabled = true;
